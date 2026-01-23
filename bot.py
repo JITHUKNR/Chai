@@ -36,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V10 Running!"
+def home(): return "Chai Bot V11 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -65,6 +65,9 @@ def create_user(user_id, first_name):
             'last_mode': 'any',
             'referred_by': None
         })
+    else:
+        # Update name if changed
+        users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name}})
 
 def update_referral(referrer_id):
     if db is None: return
@@ -95,25 +98,38 @@ def has_link(text):
     regex = r"(http|https|www\.|t\.me|telegram\.me|\.com|\.net|\.org|\.in)"
     return re.search(regex, text, re.IGNORECASE) is not None
 
+def mask_name(name):
+    if not name: return "User"
+    # ആദ്യത്തെ 2 അക്ഷരം എടുക്കുന്നു
+    if len(name) <= 2: return name + "***"
+    return name[:2] + "***"
+
 # --- COMMANDS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
+    # Create or Update User
+    create_user(user_id, user.first_name)
+    
     user_data = get_user(user_id)
     
-    if not user_data:
-        create_user(user_id, user.first_name)
-        args = context.args
-        if args and args[0].isdigit():
-            referrer_id = int(args[0])
-            if referrer_id != user_id and get_user(referrer_id):
-                update_referral(referrer_id)
-                try:
-                    await context.bot.send_message(referrer_id, "🎉 **New Referral!**\nSomeone joined using your link.")
-                except: pass
-        user_data = get_user(user_id)
+    # Check Referral
+    args = context.args
+    if args and args[0].isdigit():
+        referrer_id = int(args[0])
+        # Check if already referred to avoid duplicate counting if needed
+        if referrer_id != user_id and get_user(referrer_id) and user_data.get('referred_by') is None:
+            # Set referred_by to prevent future abuse (optional logic)
+            users_collection.update_one({'_id': user_id}, {'$set': {'referred_by': referrer_id}})
+            update_referral(referrer_id)
+            try:
+                await context.bot.send_message(referrer_id, "🎉 **New Referral!**\nSomeone joined using your link.")
+            except: pass
+            
+    # Refresh Data
+    user_data = get_user(user_id)
 
     if user_data.get('gender') is None:
         buttons = [[KeyboardButton("👦 I am Male"), KeyboardButton("👧 I am Female")]]
@@ -146,7 +162,6 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
 
 async def show_main_menu(update: Update):
-    # --- CHANGED BUTTON NAME HERE ---
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
@@ -232,6 +247,13 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
+                # --- NEW CONNECTED MESSAGE ---
+                my_name = user_data.get('name', 'User')
+                partner_name = partner_data.get('name', 'User')
+                
+                msg_to_me = f"💜 **Connected with new!**\n👤 **Name:** {mask_name(partner_name)}"
+                msg_to_partner = f"💜 **Connected with new!**\n👤 **Name:** {mask_name(my_name)}"
+                
                 # Chat Buttons
                 chat_buttons = [
                     [KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")],
@@ -239,8 +261,8 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 markup = ReplyKeyboardMarkup(chat_buttons, resize_keyboard=True)
                 
-                await context.bot.send_message(user_id, "✅ **Partner Found!**\nSay Hi! 👋", reply_markup=markup)
-                await context.bot.send_message(potential_partner, "✅ **Partner Found!**\nSay Hi! 👋", reply_markup=markup)
+                await context.bot.send_message(user_id, msg_to_me, reply_markup=markup, parse_mode='Markdown')
+                await context.bot.send_message(potential_partner, msg_to_partner, reply_markup=markup, parse_mode='Markdown')
                 return
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -441,7 +463,6 @@ async def my_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def show_main_menu_callback(query, context):
-    # --- UPDATE MENU IN CALLBACK TOO ---
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
@@ -465,9 +486,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text and "BOYS ONLY" in text:
         await find_partner(update, context)
         
-    elif text == "REFER AND EARN PREMIUM 🤑": # <--- NEW BUTTON CHECK
+    elif text == "REFER AND EARN PREMIUM 🤑":
         await my_profile(update, context)
-    elif text == "💎 My Profile": # Backwards compatibility
+    elif text == "💎 My Profile":
         await my_profile(update, context)
         
     elif text == "🌟 Donate Stars":
@@ -521,7 +542,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V10 (Refer & Earn) Started...")
+    print("Chai Bot V11 (Name Reveal) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
