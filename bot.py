@@ -16,7 +16,8 @@ from telegram.ext import (
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+# നിങ്ങളുടെ അഡ്മിൻ ഐഡി ഇവിടെ കൊടുക്കുക
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 PREMIUM_LIMIT = 50 
 
 # --- DATABASE CONNECTION ---
@@ -231,6 +232,8 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ You are not in a chat.")
         await show_main_menu(update)
 
+# --- REPORT SYSTEM ---
+
 async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in pairs:
@@ -266,11 +269,25 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
         del pairs[user_id]
         del pairs[partner_id]
         
+        # --- ADMIN REPORT ALERT (UPDATED) ---
         if ADMIN_ID != 0:
             try:
+                # യൂസർനെയിം എടുക്കുന്നു
+                reporter = await context.bot.get_chat(user_id)
+                target = await context.bot.get_chat(partner_id)
+                
+                r_user = f"@{reporter.username}" if reporter.username else "No Username"
+                t_user = f"@{target.username}" if target.username else "No Username"
+
                 await context.bot.send_message(
                     chat_id=ADMIN_ID, 
-                    text=f"🚨 **REPORT ALERT**\nReporter: {user_id}\nTarget: {partner_id}\nReason: {reason}"
+                    text=(
+                        f"🚨 **REPORT ALERT**\n\n"
+                        f"👮‍♂️ **Reporter:** {r_user} (`{user_id}`)\n"
+                        f"🚫 **Target:** {t_user} (`{partner_id}`)\n"
+                        f"📝 **Reason:** {reason}"
+                    ),
+                    parse_mode='Markdown'
                 )
             except: pass
 
@@ -294,6 +311,8 @@ async def show_main_menu_callback(query, context):
         parse_mode='Markdown'
     )
 
+# --- STARS & PROFILE SYSTEM ---
+
 async def handle_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.data == 'unblock_all':
@@ -302,26 +321,50 @@ async def handle_profile_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("All users unblocked!")
         await query.edit_message_text("✅ **All blocked users have been cleared.**")
 
-async def donate_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_invoice(
-        chat_id=update.message.chat_id,
-        title="Support Chai Bot ☕️",
-        description="Donate 50 Stars to help us keep the server running!",
-        payload="chai_donation",
-        currency="XTR",
-        prices=[LabeledPrice("Donation", 50)],
-        provider_token=""
+# --- STARS DONATION (10, 20, 50, 100, 500) ---
+
+async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("⭐️ 10", callback_data='pay_10'), InlineKeyboardButton("⭐️ 20", callback_data='pay_20'), InlineKeyboardButton("⭐️ 50", callback_data='pay_50')],
+        [InlineKeyboardButton("⭐️ 100", callback_data='pay_100'), InlineKeyboardButton("⭐️ 500", callback_data='pay_500')],
+        [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]
+    ]
+    await update.message.reply_text(
+        "🌟 **Support Chai Bot!** ☕️\nChoose an amount to donate:", 
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
+
+async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == 'pay_cancel':
+        await query.edit_message_text("❌ Donation cancelled.")
+        return
+        
+    if data.startswith('pay_'):
+        amount = int(data.split('_')[1])
+        await context.bot.send_invoice(
+            chat_id=query.from_user.id,
+            title="Support Chai Bot ☕️",
+            description=f"Donate {amount} Stars to help us keep the server running!",
+            payload=f"chai_donation_{amount}",
+            currency="XTR",
+            prices=[LabeledPrice("Donation", amount)],
+            provider_token=""
+        )
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
-    if query.invoice_payload != 'chai_donation':
+    if not query.invoice_payload.startswith('chai_donation'):
         await query.answer(ok=False, error_message="Something went wrong.")
     else:
         await query.answer(ok=True)
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌟 **Thank you for your donation!** 🌟")
+    await update.message.reply_text("🌟 **Thank you for your donation!** 🌟\nYour support means a lot to us! ☕️")
 
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -360,7 +403,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "My Profile" in text:
         await my_profile(update, context)
     elif "Donate Stars" in text:
-        await donate_stars(update, context)
+        await donate_menu(update, context)
     elif text == "❌ Stop Chat":
         await stop_chat(update, context)
     elif text == "⚠️ Report & Block":
@@ -372,19 +415,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            # --- TYPING INDICATOR ADDED HERE ---
             partner_id = pairs[user_id]
-            
-            # Send 'Typing...' status to partner
+            # 1. Typing Indicator
             await context.bot.send_chat_action(chat_id=partner_id, action=constants.ChatAction.TYPING)
-            
-            # Copy Message
+            # 2. Send Message to Partner
             await update.message.copy(chat_id=partner_id)
             
-            # Admin Monitor
+            # 3. ADMIN MONITOR (Updated)
             if ADMIN_ID != 0:
-                try: await update.message.forward(chat_id=ADMIN_ID)
+                user = update.effective_user
+                username = f"@{user.username}" if user.username else "No Username"
+                
+                # Create Admin Log Text
+                log_head = f"👤 <b>{user.first_name}</b> ({username}) <code>{user.id}</code>"
+                
+                try:
+                    if text:
+                        # ടെക്സ്റ്റ് ആണെങ്കിൽ അത് നേരിട്ട് കാണിക്കുന്നു
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"{log_head}\n💬 {text}", parse_mode='HTML')
+                    else:
+                        # മീഡിയ ആണെങ്കിൽ ഫോർവേഡ് ചെയ്യുന്നു
+                        await update.message.forward(chat_id=ADMIN_ID)
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"👆 Media from {log_head}", parse_mode='HTML')
                 except: pass
+
         except:
             await stop_chat(update, context)
     else:
@@ -396,13 +450,17 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    
+    # Handlers
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern='^rep_'))
     app.add_handler(CallbackQueryHandler(handle_profile_callback, pattern='^unblock_all'))
+    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^pay_'))
+    
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot Final V2 Started...")
+    print("Chai Bot Final V5 (Admin Username & Stars) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
