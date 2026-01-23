@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V25 Running!"
+def home(): return "Chai Bot V26 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -208,7 +208,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER (IMPROVED REAL CHECK) ---
+# --- CHAT & FIND PARTNER (GHOST BREAKER ADDED) ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -242,25 +242,22 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # 2. CONSTANTLY CHECK FOR REAL USERS (Loop for 10-12 seconds)
+    # 2. CHECK LOOP
     found_real = False
     
-    for i in range(6): # Check 6 times x 2 seconds = 12 seconds wait
+    for i in range(5): # Loop for 10 seconds (5 x 2s)
         
-        # Check if I was already paired by someone else!
-        if user_id in pairs: 
-            return # Stop searching, someone connected to me!
+        if user_id in pairs: return # I got paired!
 
-        # Check Queue again for new people
+        # --- A. CHECK QUEUE FOR WAITING USERS ---
         available = queues[target_gender] if target_gender != 'any' else queues['any']
         blocked = user_data.get('blocked_users', [])
         
-        if len(available) > 1: # More than just me
+        if len(available) > 1:
             for partner in available:
                 p_data = get_user(partner)
                 if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
-                    
-                    # Connect Real
+                    # Connect
                     for q in queues.values():
                         if user_id in q: q.remove(user_id)
                         if partner in q: q.remove(partner)
@@ -279,18 +276,54 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
                     await context.bot.send_message(partner, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
                     found_real = True
-                    return # Exit function success
+                    return 
 
-        # Wait before checking again
+        # --- B. GHOST BREAKER (STEAL USERS FROM GHOST) ---
+        # If queue is empty, check if anyone is talking to GHOST and free them!
+        if not found_real:
+            for active_user, partner_id in list(pairs.items()):
+                # If someone (active_user) is talking to GHOST_ID
+                # And that user is not me
+                # And not blocked
+                if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
+                    
+                    p_data = get_user(active_user)
+                    
+                    # Gender Check logic (if needed, simplified here for 'any')
+                    # Force Disconnect them from Ghost
+                    if active_user in pairs: del pairs[active_user]
+                    if active_user in ghost_sessions: del ghost_sessions[active_user]
+                    
+                    # Remove me from queue
+                    for q in queues.values():
+                        if user_id in q: q.remove(user_id)
+                    
+                    # Connect Me and Them
+                    pairs[user_id] = active_user
+                    pairs[active_user] = user_id
+                    
+                    last_activity[user_id] = time.time()
+                    last_activity[active_user] = time.time()
+                    
+                    my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
+                    p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
+                    
+                    markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+                    
+                    # Send messages
+                    await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
+                    await context.bot.send_message(active_user, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
+                    
+                    found_real = True
+                    return
+
         await asyncio.sleep(2) 
     
-    # 3. IF NO REAL USER FOUND AFTER WAITING -> GHOST
+    # 3. IF NO ONE FOUND -> GHOST
     if not found_real:
-        # Remove from queues first
         for q in queues.values():
             if user_id in q: q.remove(user_id)
             
-        # Double check if someone grabbed me in last second
         if user_id in pairs: return 
 
         pairs[user_id] = GHOST_ID
@@ -516,7 +549,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V25 (Real User Priority) Started...")
+    print("Chai Bot V26 (Real User Priority Fix) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
