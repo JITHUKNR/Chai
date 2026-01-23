@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V30 Running!"
+def home(): return "Chai Bot V32 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -135,7 +135,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.callback_query.message.chat.id, text=text, reply_markup=markup, parse_mode='HTML')
 
 async def send_menu_direct(context, chat_id):
-    # Function to send menu without an update object (for background tasks)
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
@@ -227,7 +226,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER ---
+# --- CHAT & FIND PARTNER (KICK & WAIT) ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -261,16 +260,17 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # 2. CHECK LOOP
+    # 2. CHECK LOOP (Wait 20s for Real User)
     found_real = False
+    kicked_ghost = False # Flag to ensure we only kick once per search
     
-    for i in range(6): # Wait 12 seconds
-        if user_id in pairs: return 
+    for i in range(10): # 10 * 2 = 20 seconds
+        if user_id in pairs: return # Already connected by someone else
 
         available = queues[target_gender] if target_gender != 'any' else queues['any']
         blocked = user_data.get('blocked_users', [])
         
-        # A. Check Queue
+        # A. Check Queue for AVAILABLE users
         if len(available) > 1:
             for partner in available:
                 p_data = get_user(partner)
@@ -296,28 +296,26 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     found_real = True
                     return 
 
-        # B. GHOST BREAKER (Kick active user, but DON'T auto-connect)
-        if not found_real:
+        # B. KICK & WAIT LOGIC
+        if not found_real and not kicked_ghost:
             for active_user, partner_id in list(pairs.items()):
                 if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
                     
-                    # 1. Disconnect them from Ghost
+                    # Found someone talking to Ghost. Kick them to make them available!
                     if active_user in pairs: del pairs[active_user]
                     if active_user in ghost_sessions: del ghost_sessions[active_user]
                     
-                    # 2. Send "Partner Left" + Menu to them
                     try:
                         await context.bot.send_message(active_user, "❌ <b>Partner left.</b>", parse_mode='HTML')
                         await send_menu_direct(context, active_user) # Show Menu (Stop & Wait)
                     except: pass
                     
-                    # 3. DO NOT CONNECT `user_id` YET.
-                    # Just free up the other user so they can click Random again.
-                    pass 
+                    kicked_ghost = True # We kicked one person, now we wait for them to click search
+                    break
 
         await asyncio.sleep(2) 
     
-    # 3. IF NO ONE FOUND AFTER WAITING -> GHOST
+    # 3. IF NO ONE FOUND AFTER WAITING 20s -> GHOST
     if not found_real:
         for q in queues.values():
             if user_id in q: q.remove(user_id)
@@ -427,7 +425,10 @@ async def manage_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Unblocked!"); await manage_blocked(update, context)
     elif query.data == 'profile_back': await show_account_page(update, context)
 
-# --- ADMIN PANEL ---
+async def show_main_menu_callback(query, context):
+    buttons = [[KeyboardButton("🔀 RANDOM (FREE)")], [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")], [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")], [KeyboardButton("🌟 Donate Stars"), KeyboardButton("❌ Stop Chat")]]
+    await context.bot.send_message(query.from_user.id, "<b>Main Menu</b> 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     kb = [[InlineKeyboardButton("📊 Stats", callback_data='admin_stats')], [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')], [InlineKeyboardButton("❌ Close", callback_data='admin_close')]]
@@ -537,7 +538,6 @@ def main():
     threading.Thread(target=run_web_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     
-    # Add Error Handler
     app.add_error_handler(error_handler)
     
     threading.Thread(target=check_inactivity_loop, args=(app,), daemon=True).start()
@@ -556,7 +556,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V30 (Fixed & Stable) Started...")
+    print("Chai Bot V32 (Kick & Wait) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
