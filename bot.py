@@ -36,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V13 Running!"
+def home(): return "Chai Bot V14 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -48,10 +48,9 @@ pairs = {}
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- HELPER FUNCTIONS (FIXED) ---
+# --- HELPER FUNCTIONS ---
 def get_user(user_id):
     if db is None: return {}
-    # FIX: If find_one returns None, return empty dict {} to avoid crash
     data = users_collection.find_one({'_id': user_id})
     return data if data else {}
 
@@ -101,8 +100,12 @@ def has_link(text):
 
 def mask_name(name):
     if not name: return "User"
-    if len(name) <= 2: return name + "***"
-    return name[:2] + "***"
+    # എറർ ഒഴിവാക്കാൻ പേര് ക്ലീൻ ചെയ്യുന്നു (Remove special chars)
+    clean_name = re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", "", name)
+    if not clean_name: return "User"
+    
+    if len(clean_name) <= 2: return clean_name + "***"
+    return clean_name[:2] + "***"
 
 # --- COMMANDS ---
 
@@ -184,7 +187,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    # Smart Search Logic
     last_mode = user_data.get('last_mode', 'any')
     target_gender = last_mode
     
@@ -226,14 +228,13 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(available_list) > 1:
         for potential_partner in available_list:
-            partner_data = get_user(potential_partner) # This is now SAFE
+            partner_data = get_user(potential_partner)
             partner_blocked = partner_data.get('blocked_users', [])
             
             if (potential_partner != user_id and 
                 potential_partner not in blocked_list and 
                 user_id not in partner_blocked):
                 
-                # Match Found
                 for q in queues.values():
                     if user_id in q: q.remove(user_id)
                     if potential_partner in q: q.remove(potential_partner)
@@ -241,7 +242,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                # Names
+                # Names Cleaned
                 my_name = user_data.get('name', 'User')
                 partner_name = partner_data.get('name', 'User')
                 
@@ -535,7 +536,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V13 (Connection Fixed) Started...")
+    print("Chai Bot V14 (Fixes Applied) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
