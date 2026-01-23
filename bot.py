@@ -12,6 +12,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
     PreCheckoutQueryHandler, filters, ContextTypes
 )
+import html # HTML Escaping
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TOKEN")
@@ -36,7 +37,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V15 Running!"
+def home(): return "Chai Bot V16 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -100,14 +101,10 @@ def has_link(text):
 
 def mask_name(name):
     if not name: return "User"
-    # എറർ ഒഴിവാക്കാൻ പേര് പൂർണ്ണമായും ക്ലീൻ ചെയ്യുന്നു
-    # ചിഹ്നങ്ങൾ എല്ലാം കളയുന്നു (Bold/Italic crash ഒഴിവാക്കാൻ)
-    clean_name = re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", "", name)
-    
-    if not clean_name: return "User" # പേരിൽ ചിഹ്നങ്ങൾ മാത്രമേ ഉള്ളൂ എങ്കിൽ
-    
-    if len(clean_name) <= 2: return clean_name + "***"
-    return clean_name[:2] + "***"
+    # HTML escape to prevent errors with < or >
+    safe_name = html.escape(name)
+    if len(safe_name) <= 2: return safe_name + "***"
+    return safe_name[:2] + "***"
 
 # --- COMMANDS ---
 
@@ -125,7 +122,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users_collection.update_one({'_id': user_id}, {'$set': {'referred_by': referrer_id}})
             update_referral(referrer_id)
             try:
-                await context.bot.send_message(referrer_id, "🎉 **New Referral!**\nSomeone joined using your link.")
+                await context.bot.send_message(referrer_id, "🎉 <b>New Referral!</b>\nSomeone joined using your link.", parse_mode='HTML')
             except: pass
             
     user_data = get_user(user_id)
@@ -133,11 +130,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_data.get('gender') is None:
         buttons = [[KeyboardButton("👦 I am Male"), KeyboardButton("👧 I am Female")]]
         await update.message.reply_text(
-            f"👋 **Hi {user.first_name}!**\n\n"
-            "Welcome to **Chai**! ☕️\n"
-            "**Before we start, please select your gender:** 👇",
+            f"👋 <b>Hi {html.escape(user.first_name)}!</b>\n\n"
+            "Welcome to <b>Chai</b>! ☕️\n"
+            "<b>Before we start, please select your gender:</b> 👇",
             reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
     else:
         await show_main_menu(update)
@@ -150,14 +147,14 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_data: return await start(update, context)
 
     if user_data.get('gender') is not None:
-        await update.message.reply_text("⚠️ **Gender is already set!**\nYou cannot change it.")
+        await update.message.reply_text("⚠️ <b>Gender is already set!</b>\nYou cannot change it.", parse_mode='HTML')
         await show_main_menu(update)
         return
 
     gender = "Male" if text == "👦 I am Male" else "Female"
     set_user_gender(user_id, gender)
     
-    await update.message.reply_text(f"✅ Gender set to **{gender}**!")
+    await update.message.reply_text(f"✅ Gender set to <b>{gender}</b>!", parse_mode='HTML')
     await show_main_menu(update)
 
 async def show_main_menu(update: Update):
@@ -168,9 +165,9 @@ async def show_main_menu(update: Update):
         [KeyboardButton("❌ Stop Chat")]
     ]
     await update.message.reply_text(
-        "**Main Menu** 🏠\nPlease select an option 👇",
+        "<b>Main Menu</b> 🏠\nPlease select an option 👇",
         reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,7 +178,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_or_update_user(user_id, user.first_name)
     
     if user_id in pairs:
-        await update.message.reply_text("⚠️ You are already in a chat! Use **Skip** or **Stop**.")
+        await update.message.reply_text("⚠️ You are already in a chat! Use <b>Skip</b> or <b>Stop</b>.", parse_mode='HTML')
         return
 
     user_data = get_user(user_id)
@@ -205,11 +202,11 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     referrals = user_data.get('referrals', 0)
     
     if target_gender == "Female" and referrals < PREMIUM_LIMIT:
-        await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals to search Girls.")
+        await update.message.reply_text(f"🔒 <b>Premium Feature!</b>\nYou need {PREMIUM_LIMIT} referrals to search Girls.", parse_mode='HTML')
         return
     
     if target_gender == "Male" and referrals < PREMIUM_LIMIT:
-        await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals to search Boys.")
+        await update.message.reply_text(f"🔒 <b>Premium Feature!</b>\nYou need {PREMIUM_LIMIT} referrals to search Boys.", parse_mode='HTML')
         return
 
     user_gender = user_data['gender']
@@ -223,7 +220,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_gender == "Female": mode_text = "Girl"
     elif target_gender == "Male": mode_text = "Boy"
     
-    await update.message.reply_text(f"🔍 **Searching for {mode_text}...**\nWaiting... ☕️")
+    await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b>\nWaiting... ☕️", parse_mode='HTML')
     
     available_list = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked_list = user_data.get('blocked_users', [])
@@ -244,12 +241,12 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                # Names Cleaned (Updated Logic)
+                # Names (Using HTML)
                 my_name = user_data.get('name', 'User')
                 partner_name = partner_data.get('name', 'User')
                 
-                msg_to_me = f"💜 **Connected with new!**\nName : {mask_name(partner_name)}"
-                msg_to_partner = f"💜 **Connected with new!**\nName : {mask_name(my_name)}"
+                msg_to_me = f"💜 <b>Connected with new!</b>\nName : {mask_name(partner_name)}"
+                msg_to_partner = f"💜 <b>Connected with new!</b>\nName : {mask_name(my_name)}"
                 
                 chat_buttons = [
                     [KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")],
@@ -258,16 +255,13 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 markup = ReplyKeyboardMarkup(chat_buttons, resize_keyboard=True)
                 
                 try:
-                    await context.bot.send_message(user_id, msg_to_me, reply_markup=markup, parse_mode='Markdown')
-                except:
-                    # If failed, send without name
-                    await context.bot.send_message(user_id, "💜 **Connected!**", reply_markup=markup)
-                    
-                try:
-                    await context.bot.send_message(potential_partner, msg_to_partner, reply_markup=markup, parse_mode='Markdown')
-                except:
-                    await context.bot.send_message(potential_partner, "💜 **Connected!**", reply_markup=markup)
-                    
+                    await context.bot.send_message(user_id, msg_to_me, reply_markup=markup, parse_mode='HTML')
+                    await context.bot.send_message(potential_partner, msg_to_partner, reply_markup=markup, parse_mode='HTML')
+                except Exception as e:
+                    print(f"Error sending connected msg: {e}")
+                    # Fallback just in case
+                    await context.bot.send_message(user_id, "💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
+                    await context.bot.send_message(potential_partner, "💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
                 return
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,15 +271,15 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partner = pairs[user_id]
         del pairs[user_id]
         del pairs[partner]
-        await context.bot.send_message(partner, "❌ **Partner left.**\nType /start to find new.")
+        await context.bot.send_message(partner, "❌ <b>Partner left.</b>\nType /start to find new.", parse_mode='HTML')
         await show_main_menu(update)
     elif user_id in queues['any']:
         for q in queues.values():
             if user_id in q: q.remove(user_id)
-        await update.message.reply_text("🛑 **Search Stopped.**")
+        await update.message.reply_text("🛑 <b>Search Stopped.</b>", parse_mode='HTML')
         await show_main_menu(update)
     else:
-        await update.message.reply_text("⚠️ You are not in a chat.")
+        await update.message.reply_text("⚠️ You are not in a chat.", parse_mode='HTML')
         await show_main_menu(update)
 
 async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -295,12 +289,12 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del pairs[user_id]
         del pairs[partner]
         
-        await context.bot.send_message(partner, "❌ **Partner skipped you.**\nType /start to find new.")
-        await update.message.reply_text("⏭ **Skipped! Searching new...** ⏳")
+        await context.bot.send_message(partner, "❌ <b>Partner skipped you.</b>\nType /start to find new.", parse_mode='HTML')
+        await update.message.reply_text("⏭ <b>Skipped! Searching new...</b> ⏳", parse_mode='HTML')
         
         await find_partner(update, context)
     else:
-        await update.message.reply_text("⚠️ You are not in a chat.")
+        await update.message.reply_text("⚠️ You are not in a chat.", parse_mode='HTML')
         await show_main_menu(update)
 
 # --- REPORT & BLOCK ---
@@ -308,7 +302,7 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in pairs:
-        await update.message.reply_text("⚠️ You are not in a chat.")
+        await update.message.reply_text("⚠️ You are not in a chat.", parse_mode='HTML')
         return
 
     keyboard = [
@@ -316,7 +310,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🤖 Spam", callback_data='rep_spam'), InlineKeyboardButton("🔙 Cancel", callback_data='rep_cancel')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⚠️ **Report & Block:**", reply_markup=reply_markup)
+    await update.message.reply_text("⚠️ <b>Report & Block:</b>", reply_markup=reply_markup, parse_mode='HTML')
 
 async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -346,12 +340,13 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
                 t_user = f"@{target.username}" if target.username else "No Username"
                 await context.bot.send_message(
                     chat_id=ADMIN_ID, 
-                    text=f"🚨 **REPORT**\nBy: {r_user} ({user_id})\nTo: {t_user} ({partner_id})\nReason: {reason}"
+                    text=f"🚨 <b>REPORT</b>\nBy: {r_user} ({user_id})\nTo: {t_user} ({partner_id})\nReason: {reason}",
+                    parse_mode='HTML'
                 )
             except: pass
 
-        await context.bot.send_message(partner_id, f"🚫 **Reported for {reason}.**\nChat ended.")
-        await query.edit_message_text(f"✅ **Reported & Blocked!**")
+        await context.bot.send_message(partner_id, f"🚫 <b>Reported for {reason}.</b>\nChat ended.", parse_mode='HTML')
+        await query.edit_message_text(f"✅ <b>Reported & Blocked!</b>", parse_mode='HTML')
         await show_main_menu_callback(query, context)
     else:
         await query.edit_message_text("⚠️ Chat ended.")
@@ -365,7 +360,7 @@ async def show_blocked_users(update: Update, context: ContextTypes.DEFAULT_TYPE)
     blocked_list = user_data.get('blocked_users', [])
     if not blocked_list:
         await query.answer("No blocked users.")
-        await query.edit_message_text("✅ **You haven't blocked anyone.**")
+        await query.edit_message_text("✅ <b>You haven't blocked anyone.</b>", parse_mode='HTML')
         return
 
     keyboard = []
@@ -374,7 +369,7 @@ async def show_blocked_users(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     keyboard.append([InlineKeyboardButton("🔓 Unblock All", callback_data='unblock_all')])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profile_back')])
-    await query.edit_message_text("🚫 **Blocked Users List:**", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("🚫 <b>Blocked Users List:</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def handle_unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -388,7 +383,7 @@ async def handle_unblock_callback(update: Update, context: ContextTypes.DEFAULT_
     if data == 'unblock_all':
         unblock_all_in_db(user_id)
         await query.answer("All unblocked!")
-        await query.edit_message_text("✅ **All blocked users have been unblocked.**")
+        await query.edit_message_text("✅ <b>All blocked users have been unblocked.</b>", parse_mode='HTML')
         return
 
     if data.startswith('unblock_'):
@@ -405,7 +400,7 @@ async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⭐️ 100", callback_data='pay_100'), InlineKeyboardButton("⭐️ 500", callback_data='pay_500')],
         [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]
     ]
-    await update.message.reply_text("🌟 **Donate Stars:**", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("🌟 <b>Donate Stars:</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -427,7 +422,7 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.pre_checkout_query.answer(ok=True)
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌟 **Thanks for the donation!**")
+    await update.message.reply_text("🌟 <b>Thanks for the donation!</b>", parse_mode='HTML')
 
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -440,13 +435,13 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(f"🚫 Manage Blocked Users ({blocked_count})", callback_data='show_blocked')]]
     
     await update.message.reply_text(
-        f"👤 **Your Profile**\n\n"
-        f"🆔 ID: `{user_id}`\n"
+        f"👤 <b>Your Profile</b>\n\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
         f"👥 Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
         f"🚫 Blocked: {blocked_count}\n\n"
-        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`\n\n"
-        f"💡 _Share link to earn premium!_",
-        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+        f"🔗 Link: <code>https://t.me/{context.bot.username}?start={user_id}</code>\n\n"
+        f"💡 <i>Share link to earn premium!</i>",
+        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
 
 async def my_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -459,12 +454,12 @@ async def my_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = [[InlineKeyboardButton(f"🚫 Manage Blocked Users ({blocked_count})", callback_data='show_blocked')]]
     
     await query.edit_message_text(
-        f"👤 **Your Profile**\n\n"
-        f"🆔 ID: `{user_id}`\n"
+        f"👤 <b>Your Profile</b>\n\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
         f"👥 Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
         f"🚫 Blocked: {blocked_count}\n\n"
-        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`",
-        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+        f"🔗 Link: <code>https://t.me/{context.bot.username}?start={user_id}</code>",
+        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML'
     )
 
 async def show_main_menu_callback(query, context):
@@ -474,7 +469,7 @@ async def show_main_menu_callback(query, context):
         [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("🌟 Donate Stars")],
         [KeyboardButton("❌ Stop Chat")]
     ]
-    await context.bot.send_message(chat_id=query.from_user.id, text="**Main Menu** 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='Markdown')
+    await context.bot.send_message(chat_id=query.from_user.id, text="<b>Main Menu</b> 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
 
 # --- MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -507,7 +502,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif user_id in pairs:
         if text and has_link(text):
-            await update.message.reply_text("🚫 **Links are not allowed!**")
+            await update.message.reply_text("🚫 <b>Links are not allowed!</b>", parse_mode='HTML')
             return
         try:
             partner_id = pairs[user_id]
@@ -547,7 +542,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V15 (Name Error & Conflict Fixed) Started...")
+    print("Chai Bot V16 (HTML - Name Fixed) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
