@@ -36,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V9 Running!"
+def home(): return "Chai Bot V10 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -62,7 +62,7 @@ def create_user(user_id, first_name):
             'gender': None,
             'referrals': 0,
             'blocked_users': [],
-            'last_mode': 'any', # സ്കിപ്പ് ചെയ്യുമ്പോൾ ഉപയോഗിക്കാൻ
+            'last_mode': 'any',
             'referred_by': None
         })
 
@@ -146,10 +146,11 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
 
 async def show_main_menu(update: Update):
+    # --- CHANGED BUTTON NAME HERE ---
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
-        [KeyboardButton("💎 My Profile"), KeyboardButton("🌟 Donate Stars")],
+        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("🌟 Donate Stars")],
         [KeyboardButton("❌ Stop Chat")]
     ]
     await update.message.reply_text(
@@ -171,8 +172,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    # --- SMART SEARCH LOGIC ---
-    # പഴയ മോഡ് എന്താണോ അത് തന്നെ സ്കിപ്പ് ചെയ്യുമ്പോഴും ഉപയോഗിക്കും
+    # Smart Search Logic
     last_mode = user_data.get('last_mode', 'any')
     target_gender = last_mode
     
@@ -232,7 +232,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                # --- CHAT BUTTONS WITH SKIP ---
+                # Chat Buttons
                 chat_buttons = [
                     [KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")],
                     [KeyboardButton("⚠️ Report & Block")]
@@ -271,7 +271,6 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(partner, "❌ **Partner skipped you.**\nType /start to find new.")
         await update.message.reply_text("⏭ **Skipped! Searching new...** ⏳")
         
-        # Trigger Search Again (Smart Search uses Last Mode)
         await find_partner(update, context)
     else:
         await update.message.reply_text("⚠️ You are not in a chat.")
@@ -418,7 +417,8 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 ID: `{user_id}`\n"
         f"👥 Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
         f"🚫 Blocked: {blocked_count}\n\n"
-        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`",
+        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`\n\n"
+        f"💡 _Share link to earn premium!_",
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
     )
 
@@ -441,10 +441,11 @@ async def my_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def show_main_menu_callback(query, context):
+    # --- UPDATE MENU IN CALLBACK TOO ---
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
-        [KeyboardButton("💎 My Profile"), KeyboardButton("🌟 Donate Stars")],
+        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("🌟 Donate Stars")],
         [KeyboardButton("❌ Stop Chat")]
     ]
     await context.bot.send_message(chat_id=query.from_user.id, text="**Main Menu** 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='Markdown')
@@ -459,18 +460,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔀 RANDOM (FREE)":
         await find_partner(update, context)
     
-    elif text == "💜 GIRLS ONLY":
+    elif text and "GIRLS ONLY" in text:
         await find_partner(update, context)
-    elif text == "💙 BOYS ONLY":
+    elif text and "BOYS ONLY" in text:
         await find_partner(update, context)
         
-    elif text == "💎 My Profile":
+    elif text == "REFER AND EARN PREMIUM 🤑": # <--- NEW BUTTON CHECK
         await my_profile(update, context)
+    elif text == "💎 My Profile": # Backwards compatibility
+        await my_profile(update, context)
+        
     elif text == "🌟 Donate Stars":
         await donate_menu(update, context)
     elif text == "❌ Stop Chat":
         await stop_chat(update, context)
-    elif text == "⏭ Skip": # <--- SKIP BUTTON HANDLER
+    elif text == "⏭ Skip":
         await skip_chat(update, context)
     elif text == "⚠️ Report & Block":
         await report_menu(update, context)
@@ -517,7 +521,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V9 (Skip) Started...")
+    print("Chai Bot V10 (Refer & Earn) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
