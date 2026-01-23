@@ -1,7 +1,10 @@
 import os
 import logging
 import threading
+import time
 import re
+import random
+import asyncio
 from flask import Flask
 import pymongo
 from telegram import (
@@ -19,7 +22,12 @@ TOKEN = os.environ.get("TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 PREMIUM_LIMIT = 50 
-STAR_BADGE_LIMIT = 10 # 10 Good ratings കിട്ടിയാൽ Star കിട്ടും
+STAR_BADGE_LIMIT = 10 
+INACTIVITY_LIMIT = 180  # 3 Minutes
+GHOST_ID = -999 # Fake User ID
+
+# --- GHOST REPLIES (Human-like) ---
+GHOST_REPLIES = ["hy", "oii", "hey", "hlo", "da", "hello", "oi"]
 
 # --- DATABASE CONNECTION ---
 if not MONGO_URL:
@@ -38,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V20 Running!"
+def home(): return "Chai Bot V22 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -46,6 +54,8 @@ def run_web_server():
 # --- MEMORY ---
 queues = {'any': [], 'Male': [], 'Female': []}
 pairs = {} 
+last_activity = {} 
+ghost_sessions = {} # To track ghost chat state
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -64,8 +74,8 @@ def create_or_update_user(user_id, first_name):
             'name': first_name,
             'gender': None,
             'referrals': 0,
-            'good_karma': 0, # New
-            'bad_karma': 0,  # New
+            'good_karma': 0,
+            'bad_karma': 0,
             'blocked_users': [],
             'last_mode': 'any',
             'referred_by': None
@@ -98,26 +108,38 @@ def unblock_user_in_db(user_id, target_id):
     if db is None: return
     users_collection.update_one({'_id': user_id}, {'$pull': {'blocked_users': target_id}})
 
-def unblock_all_in_db(user_id):
-    if db is None: return
-    users_collection.update_one({'_id': user_id}, {'$set': {'blocked_users': []}})
-
-def has_link(text):
-    if not text: return False
-    regex = r"(http|https|www\.|t\.me|telegram\.me|\.com|\.net|\.org|\.in)"
-    return re.search(regex, text, re.IGNORECASE) is not None
-
 def mask_name(name, good_karma=0):
     if not name: return "User"
     safe_name = html.escape(name)
     masked = safe_name
     if len(safe_name) > 2: masked = safe_name[:2] + "***"
     else: masked = safe_name + "***"
-    
-    # Add Star if Good Karma is high
-    if good_karma >= STAR_BADGE_LIMIT:
-        return f"⭐️ {masked}"
+    if good_karma >= STAR_BADGE_LIMIT: return f"⭐️ {masked}"
     return masked
+
+# --- BACKGROUND TASK: CHECK INACTIVITY ---
+def check_inactivity_loop(application):
+    while True:
+        time.sleep(30)
+        current_time = time.time()
+        active_pairs = list(pairs.items())
+        
+        for user_id, partner_id in active_pairs:
+            if partner_id == GHOST_ID: continue
+            
+            last_time = last_activity.get(user_id, current_time)
+            if current_time - last_time > INACTIVITY_LIMIT:
+                try:
+                    async_send(application, user_id, "⚠️ <b>Chat ended due to inactivity.</b>")
+                    async_send(application, partner_id, "⚠️ <b>Chat ended due to inactivity.</b>")
+                    if user_id in pairs: del pairs[user_id]
+                    if partner_id in pairs: del pairs[partner_id]
+                    if user_id in last_activity: del last_activity[user_id]
+                    if partner_id in last_activity: del last_activity[partner_id]
+                except: pass
+
+def async_send(app, chat_id, text):
+    app.create_task(app.bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML'))
 
 # --- COMMANDS ---
 
@@ -170,56 +192,37 @@ async def show_main_menu(update: Update):
 # --- RATING SYSTEM ---
 
 async def send_rating_prompt(context, chat_id, partner_id):
+    if partner_id == GHOST_ID: return 
     try:
-        keyboard = [
-            [InlineKeyboardButton("👍 Good", callback_data=f"rate_good_{partner_id}"), 
-             InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{partner_id}")]
-        ]
-        await context.bot.send_message(
-            chat_id, 
-            "📝 <b>How was your partner?</b>", 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode='HTML'
-        )
+        keyboard = [[InlineKeyboardButton("👍 Good", callback_data=f"rate_good_{partner_id}"), InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{partner_id}")]]
+        await context.bot.send_message(chat_id, "📝 <b>How was your partner?</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     except: pass
 
 async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
-    
     if data.startswith('rate_'):
         parts = data.split('_')
-        rating_type = parts[1] # good or bad
-        partner_id = int(parts[2])
-        
-        if rating_type == 'good':
-            update_karma(partner_id, is_good=True)
-            await query.answer("Thanks for rating! 👍")
-            await query.edit_message_text("✅ <b>You rated: Good!</b>", parse_mode='HTML')
-        else:
-            update_karma(partner_id, is_good=False)
-            await query.answer("Feedback recorded. 👎")
-            await query.edit_message_text("✅ <b>You rated: Bad.</b>", parse_mode='HTML')
+        rating = parts[1]; pid = int(parts[2])
+        update_karma(pid, is_good=(rating == 'good'))
+        await query.answer("Thanks!")
+        await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT LOGIC ---
+# --- CHAT & FIND PARTNER ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
+    user_id = update.effective_user.id
     text = update.message.text
-    create_or_update_user(user_id, user.first_name)
+    create_or_update_user(user_id, update.effective_user.first_name)
     
     if user_id in pairs:
         await update.message.reply_text("⚠️ Use <b>Skip</b> or <b>Stop</b>.", parse_mode='HTML')
         return
 
     user_data = get_user(user_id)
-    if not user_data or not user_data.get('gender'):
-        await start(update, context)
-        return
+    if not user_data or not user_data.get('gender'): await start(update, context); return
 
-    last_mode = user_data.get('last_mode', 'any')
-    target_gender = last_mode
+    target_gender = user_data.get('last_mode', 'any')
     if text == "💜 GIRLS ONLY": target_gender = "Female"; update_search_mode(user_id, "Female")
     elif text == "💙 BOYS ONLY": target_gender = "Male"; update_search_mode(user_id, "Male")
     elif text == "🔀 RANDOM (FREE)": target_gender = "any"; update_search_mode(user_id, "any")
@@ -229,48 +232,66 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_gender = user_data['gender']
-    if user_id not in queues['any']:
-        queues['any'].append(user_id)
-        if user_gender == "Male": queues['Male'].append(user_id)
-        elif user_gender == "Female": queues['Female'].append(user_id)
-
-    mode_text = "Partner"
-    await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
+    # Logic: Search existing queue
     available = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked = user_data.get('blocked_users', [])
     
-    if len(available) > 1:
+    found_partner = False
+    if len(available) > 0:
         for partner in available:
             p_data = get_user(partner)
             if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
+                # Real Partner Found
                 for q in queues.values():
                     if user_id in q: q.remove(user_id)
                     if partner in q: q.remove(partner)
+                
                 pairs[user_id] = partner
                 pairs[partner] = user_id
                 
-                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+                last_activity[user_id] = time.time()
+                last_activity[partner] = time.time()
                 
-                # Show Names with Stars if earned
                 my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
                 p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
 
-                try:
-                    await context.bot.send_message(user_id, f"💜 <b>Connected!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
-                    await context.bot.send_message(partner, f"💜 <b>Connected!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
-                except: pass
-                return
+                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+                
+                await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
+                await context.bot.send_message(partner, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
+                found_partner = True
+                break
+    
+    if not found_partner:
+        # NO REAL PARTNER FOUND -> CONNECT TO GHOST
+        pairs[user_id] = GHOST_ID
+        ghost_sessions[user_id] = {'replied': False} # Reset State
+        
+        # Fake Name Generation
+        fake_names = ["Abh***", "Rah***", "Saj***", "Viv***", "Arj***", "Moh***"]
+        fake_name = random.choice(fake_names)
+        
+        markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+        await update.message.reply_text(f"🔍 <b>Searching...</b>", parse_mode='HTML')
+        await asyncio.sleep(1.5) # Fake delay
+        await update.message.reply_text(f"💜 <b>Connected with new!</b>\nName: {fake_name}", reply_markup=markup, parse_mode='HTML')
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    
     if user_id in pairs:
         partner = pairs[user_id]
-        del pairs[user_id]; del pairs[partner]
-        await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
-        # Ask for Rating
-        await send_rating_prompt(context, user_id, partner)
-        await send_rating_prompt(context, partner, user_id)
+        del pairs[user_id]
+        if user_id in last_activity: del last_activity[user_id]
+        if user_id in ghost_sessions: del ghost_sessions[user_id]
+        
+        if partner != GHOST_ID:
+            if partner in pairs: del pairs[partner]
+            if partner in last_activity: del last_activity[partner]
+            await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
+            await send_rating_prompt(context, user_id, partner)
+            await send_rating_prompt(context, partner, user_id)
         
         await show_main_menu(update)
     elif user_id in queues['any']:
@@ -284,19 +305,22 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in pairs:
         partner = pairs[user_id]
-        del pairs[user_id]; del pairs[partner]
-        await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
+        del pairs[user_id]
+        if user_id in last_activity: del last_activity[user_id]
+        if user_id in ghost_sessions: del ghost_sessions[user_id]
         
-        # Ask for Rating
-        await send_rating_prompt(context, user_id, partner)
-        await send_rating_prompt(context, partner, user_id)
+        if partner != GHOST_ID:
+            del pairs[partner]
+            if partner in last_activity: del last_activity[partner]
+            await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
+            await send_rating_prompt(context, user_id, partner)
+            await send_rating_prompt(context, partner, user_id)
         
         await update.message.reply_text("⏭ <b>Searching...</b>", parse_mode='HTML')
         await find_partner(update, context)
     else: await show_main_menu(update)
 
-# --- ACCOUNT & REFERRAL ---
-
+# --- OTHER HANDLERS ---
 async def show_referral_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; data = get_user(uid)
     link = f"https://t.me/{context.bot.username}?start={uid}"
@@ -314,9 +338,13 @@ async def show_account_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message: await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
     else: await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
-# --- OTHER HANDLERS ---
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: return await update.message.reply_text("⚠️ Not in chat.")
+    if pairs[update.effective_user.id] == GHOST_ID: 
+        # Fake Report for Ghost
+        await update.message.reply_text("✅ <b>Reported!</b>", parse_mode='HTML')
+        await stop_chat(update, context)
+        return
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("Bad Words", callback_data='rep_abuse'), InlineKeyboardButton("18+", callback_data='rep_adult')], [InlineKeyboardButton("Cancel", callback_data='rep_cancel')]])
     await update.message.reply_text("⚠️ <b>Report:</b>", reply_markup=markup, parse_mode='HTML')
 
@@ -324,7 +352,7 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     uid = query.from_user.id
     if query.data == 'rep_cancel': return await query.edit_message_text("Cancelled.")
-    if uid in pairs:
+    if uid in pairs and pairs[uid] != GHOST_ID:
         pid = pairs[uid]; reason = "Adult" if query.data == 'rep_adult' else "Abuse"
         block_user_in_db(uid, pid); del pairs[uid]; del pairs[pid]
         if ADMIN_ID: 
@@ -349,7 +377,6 @@ async def show_main_menu_callback(query, context):
     buttons = [[KeyboardButton("🔀 RANDOM (FREE)")], [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")], [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")], [KeyboardButton("🌟 Donate Stars"), KeyboardButton("❌ Stop Chat")]]
     await context.bot.send_message(query.from_user.id, "<b>Main Menu</b> 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
 
-# --- ADMIN PANEL ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     kb = [[InlineKeyboardButton("📊 Stats", callback_data='admin_stats')], [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')], [InlineKeyboardButton("❌ Close", callback_data='admin_close')]]
@@ -377,7 +404,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
     await msg.edit_text(f"✅ Sent to {success} users.")
 
-# --- PAYMENT ---
 async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("⭐️ 10", callback_data='pay_10'), InlineKeyboardButton("⭐️ 50", callback_data='pay_50')], [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]]
     await update.message.reply_text("🌟 <b>Donate:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
@@ -391,7 +417,7 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("🌟 <b>Thanks!</b>", parse_mode='HTML')
 
-# --- MESSAGE HANDLER (VIP CHECK) ---
+# --- MAIN MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
@@ -406,16 +432,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "⚠️ Report & Block": await handle_report(update, context)
     
     elif user.id in pairs:
+        # Update Inactivity Timer
+        last_activity[user.id] = time.time()
+        partner_id = pairs[user.id]
+        
+        # --- GHOST CHAT LOGIC ---
+        if partner_id == GHOST_ID:
+            session = ghost_sessions.get(user.id, {'replied': False})
+            
+            # Step 1: User sends message -> Ghost Replies ONE time
+            if not session['replied']:
+                await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
+                await asyncio.sleep(2) # Make it look real
+                
+                reply = random.choice(GHOST_REPLIES)
+                await update.message.reply_text(reply, parse_mode='HTML')
+                
+                # Mark as replied
+                ghost_sessions[user.id]['replied'] = True
+                return
+
+            # Step 2: User sends message AGAIN -> Wait 3s -> Skip
+            else:
+                await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
+                await asyncio.sleep(3) # Wait 3 seconds
+                
+                await update.message.reply_text("❌ <b>Partner left.</b>", parse_mode='HTML')
+                
+                # Clear Ghost Session
+                del pairs[user.id]
+                del ghost_sessions[user.id]
+                await show_main_menu(update)
+                return
+
         # --- VIP MEDIA CHECK ---
-        if not text: # It means message is media (Photo, Video, Voice etc)
+        if not text:
             user_data = get_user(user.id)
             if user_data.get('referrals', 0) < PREMIUM_LIMIT:
                 await update.message.reply_text("🔒 <b>Premium Feature!</b>\nPhotos/Videos/Voice are for Premium users only.\n\n<i>Refer friends to unlock!</i>", parse_mode='HTML')
                 return
 
+        # Send to Real Partner
         try: 
-            await context.bot.send_chat_action(pairs[user.id], constants.ChatAction.TYPING)
-            await update.message.copy(pairs[user.id])
+            await context.bot.send_chat_action(partner_id, constants.ChatAction.TYPING)
+            await update.message.copy(partner_id)
+            last_activity[partner_id] = time.time()
             if ADMIN_ID:
                 try: 
                     if text: await context.bot.send_message(ADMIN_ID, f"👤 {user.first_name} ({user.id}): {text}")
@@ -429,13 +490,15 @@ def main():
     threading.Thread(target=run_web_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     
+    threading.Thread(target=check_inactivity_loop, args=(app,), daemon=True).start()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("cast", broadcast_command))
     
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
-    app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_')) # NEW
+    app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_'))
     app.add_handler(CallbackQueryHandler(manage_blocked, pattern='^(show_blocked|unblock_|profile_back)'))
     app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^pay_'))
     
@@ -443,7 +506,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V20 (VIP Media & Ratings) Started...")
+    print("Chai Bot V22 (Ghost Mode) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
