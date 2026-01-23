@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V27 Running!"
+def home(): return "Chai Bot V29 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -59,7 +59,6 @@ ghost_sessions = {}
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # --- HELPER FUNCTIONS ---
 def get_user(user_id):
@@ -118,12 +117,21 @@ def mask_name(name, good_karma=0):
     if good_karma >= STAR_BADGE_LIMIT: return f"⭐️ {masked}"
     return masked
 
+# --- HELPER: SEND MENU ---
+async def send_main_menu(context, chat_id):
+    buttons = [
+        [KeyboardButton("🔀 RANDOM (FREE)")],
+        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
+        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
+        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("❌ Stop Chat")]
+    ]
+    await context.bot.send_message(chat_id, "<b>Main Menu</b> 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
+
 # --- BACKGROUND TASK ---
 def check_inactivity_loop(application):
     while True:
         time.sleep(30)
         current_time = time.time()
-        # Use list to avoid runtime error during iteration
         active_pairs = list(pairs.items())
         
         for user_id, partner_id in active_pairs:
@@ -183,6 +191,7 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
 
 async def show_main_menu(update: Update):
+    await send_main_menu(context=None, chat_id=None) # Helper used below
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
@@ -235,6 +244,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_gender = user_data['gender']
     
+    # 1. Add Self to Queue
     if user_id not in queues['any']:
         queues['any'].append(user_id)
         if user_gender == "Male": queues['Male'].append(user_id)
@@ -243,10 +253,10 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # --- CHECK LOOP FOR REAL USERS ---
+    # 2. CHECK LOOP
     found_real = False
     
-    for i in range(5): 
+    for i in range(5): # 10 seconds wait
         if user_id in pairs: return 
 
         available = queues[target_gender] if target_gender != 'any' else queues['any']
@@ -278,35 +288,24 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     found_real = True
                     return 
 
-        # B. GHOST BREAKER
+        # B. GHOST BREAKER (Kick active user, but DON'T auto-connect)
         if not found_real:
             for active_user, partner_id in list(pairs.items()):
                 if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
                     
-                    p_data = get_user(active_user)
-                    
+                    # 1. Disconnect them from Ghost
                     if active_user in pairs: del pairs[active_user]
-                    if active_user in ghost_sessions: del ghost_sessions[active_user] # Fix Clean up
+                    if active_user in ghost_sessions: del ghost_sessions[active_user]
                     
-                    for q in queues.values():
-                        if user_id in q: q.remove(user_id)
+                    # 2. Send "Partner Left" + Menu to them
+                    try:
+                        await context.bot.send_message(active_user, "❌ <b>Partner left.</b>", parse_mode='HTML')
+                        await send_main_menu(context, active_user) # Show Menu
+                    except: pass
                     
-                    pairs[user_id] = active_user
-                    pairs[active_user] = user_id
-                    
-                    last_activity[user_id] = time.time()
-                    last_activity[active_user] = time.time()
-                    
-                    my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
-                    p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
-                    
-                    markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
-                    
-                    await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
-                    await context.bot.send_message(active_user, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
-                    
-                    found_real = True
-                    return
+                    # 3. DO NOT CONNECT `user_id` YET.
+                    # `user_id` stays in the loop waiting for `active_user` to click "Random".
+                    pass 
 
         await asyncio.sleep(2) 
     
@@ -467,7 +466,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # --- MAIN MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not update.message: return # Safety check
+    if not update.message: return 
     text = update.message.text
     
     if text in ["👦 I am Male", "👧 I am Female"]: await set_gender(update, context)
@@ -520,7 +519,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else: await update.message.forward(ADMIN_ID)
                 except: pass
         except Exception as e:
-            # LOG ERROR TO CONSOLE
+            # LOG ERROR
             print(f"❌ Message Error from {user.id} to {partner_id}: {e}")
             await stop_chat(update, context)
     else: await show_main_menu(update)
@@ -546,7 +545,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V27 (Message Relay Fix) Started...")
+    print("Chai Bot V29 (Manual Re-connect) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
