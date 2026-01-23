@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V29 Running!"
+def home(): return "Chai Bot V31 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -59,6 +59,7 @@ ghost_sessions = {}
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- HELPER FUNCTIONS ---
 def get_user(user_id):
@@ -117,15 +118,21 @@ def mask_name(name, good_karma=0):
     if good_karma >= STAR_BADGE_LIMIT: return f"⭐️ {masked}"
     return masked
 
-# --- HELPER: SEND MENU ---
-async def send_main_menu(context, chat_id):
+# --- HELPER: SAFE SEND MENU ---
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
         [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
         [KeyboardButton("🌟 Donate Stars"), KeyboardButton("❌ Stop Chat")]
     ]
-    await context.bot.send_message(chat_id, "<b>Main Menu</b> 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
+    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    text = "<b>Main Menu</b> 🏠\nPlease select an option 👇"
+    
+    if update.message:
+        await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
+    elif update.callback_query:
+        await context.bot.send_message(chat_id=update.callback_query.message.chat.id, text=text, reply_markup=markup, parse_mode='HTML')
 
 # --- BACKGROUND TASK ---
 def check_inactivity_loop(application):
@@ -177,28 +184,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML'
         )
     else:
-        await show_main_menu(update)
+        await show_main_menu(update, context)
 
 async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     if get_user(user_id).get('gender'):
         await update.message.reply_text("⚠️ <b>Gender already set!</b>", parse_mode='HTML')
-        await show_main_menu(update)
+        await show_main_menu(update, context)
         return
     set_user_gender(user_id, "Male" if text == "👦 I am Male" else "Female")
     await update.message.reply_text(f"✅ Set to <b>{text}</b>!", parse_mode='HTML')
-    await show_main_menu(update)
-
-async def show_main_menu(update: Update):
-    await send_main_menu(context=None, chat_id=None) # Helper used below
-    buttons = [
-        [KeyboardButton("🔀 RANDOM (FREE)")],
-        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
-        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
-        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("❌ Stop Chat")]
-    ]
-    await update.message.reply_text("<b>Main Menu</b> 🏠\nPlease select an option 👇", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML')
+    await show_main_menu(update, context)
 
 # --- RATING SYSTEM ---
 
@@ -219,7 +216,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER ---
+# --- CHAT & FIND PARTNER (NO INTERRUPTION) ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -253,16 +250,16 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # 2. CHECK LOOP
+    # 2. CHECK LOOP (Wait 12s for Real User)
     found_real = False
     
-    for i in range(5): # 10 seconds wait
-        if user_id in pairs: return 
+    for i in range(6): # 12 seconds wait
+        if user_id in pairs: return # Already connected by someone else
 
         available = queues[target_gender] if target_gender != 'any' else queues['any']
         blocked = user_data.get('blocked_users', [])
         
-        # A. Check Queue
+        # A. Check Queue for AVAILABLE users
         if len(available) > 1:
             for partner in available:
                 p_data = get_user(partner)
@@ -288,28 +285,10 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     found_real = True
                     return 
 
-        # B. GHOST BREAKER (Kick active user, but DON'T auto-connect)
-        if not found_real:
-            for active_user, partner_id in list(pairs.items()):
-                if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
-                    
-                    # 1. Disconnect them from Ghost
-                    if active_user in pairs: del pairs[active_user]
-                    if active_user in ghost_sessions: del ghost_sessions[active_user]
-                    
-                    # 2. Send "Partner Left" + Menu to them
-                    try:
-                        await context.bot.send_message(active_user, "❌ <b>Partner left.</b>", parse_mode='HTML')
-                        await send_main_menu(context, active_user) # Show Menu
-                    except: pass
-                    
-                    # 3. DO NOT CONNECT `user_id` YET.
-                    # `user_id` stays in the loop waiting for `active_user` to click "Random".
-                    pass 
-
+        # Note: Ghost Breaker Removed (No interrupting existing chats)
         await asyncio.sleep(2) 
     
-    # 3. IF NO ONE FOUND -> GHOST
+    # 3. IF NO ONE FOUND AFTER WAITING -> GHOST
     if not found_real:
         for q in queues.values():
             if user_id in q: q.remove(user_id)
@@ -341,13 +320,13 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_rating_prompt(context, user_id, partner)
             await send_rating_prompt(context, partner, user_id)
         
-        await show_main_menu(update)
+        await show_main_menu(update, context)
     elif user_id in queues['any']:
         for q in queues.values(): 
             if user_id in q: q.remove(user_id)
         await update.message.reply_text("🛑 <b>Stopped.</b>", parse_mode='HTML')
-        await show_main_menu(update)
-    else: await show_main_menu(update)
+        await show_main_menu(update, context)
+    else: await show_main_menu(update, context)
 
 async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -365,7 +344,7 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_rating_prompt(context, partner, user_id)
         
         await find_partner(update, context)
-    else: await show_main_menu(update)
+    else: await show_main_menu(update, context)
 
 # --- OTHER HANDLERS ---
 async def show_referral_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,7 +385,7 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
         await context.bot.send_message(pid, f"🚫 <b>Reported for {reason}.</b>", parse_mode='HTML')
         await query.edit_message_text("✅ <b>Reported!</b>", parse_mode='HTML')
-        await show_main_menu_callback(query, context)
+        await show_main_menu(update, context) 
 
 async def manage_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; uid = query.from_user.id
@@ -498,7 +477,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ <b>Partner left.</b>", parse_mode='HTML')
                 del pairs[user.id]
                 if user.id in ghost_sessions: del ghost_sessions[user.id]
-                await show_main_menu(update)
+                await show_main_menu(update, context)
                 return
 
         # --- VIP MEDIA CHECK ---
@@ -519,15 +498,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else: await update.message.forward(ADMIN_ID)
                 except: pass
         except Exception as e:
-            # LOG ERROR
-            print(f"❌ Message Error from {user.id} to {partner_id}: {e}")
+            logger.error(f"Error sending message: {e}")
             await stop_chat(update, context)
-    else: await show_main_menu(update)
+    else: await show_main_menu(update, context)
+
+# --- ERROR HANDLER ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
 def main():
     if not TOKEN: return
     threading.Thread(target=run_web_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
+    
+    app.add_error_handler(error_handler)
     
     threading.Thread(target=check_inactivity_loop, args=(app,), daemon=True).start()
     
@@ -545,7 +529,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V29 (Manual Re-connect) Started...")
+    print("Chai Bot V31 (No Interruption) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
