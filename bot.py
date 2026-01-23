@@ -2,14 +2,11 @@ import os
 import logging
 import threading
 import time
-import re
-import random
-import asyncio
 from flask import Flask
 import pymongo
 from telegram import (
     Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, 
-    InlineKeyboardMarkup, LabeledPrice, constants
+    InlineKeyboardMarkup, constants
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
@@ -24,10 +21,6 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 PREMIUM_LIMIT = 50 
 STAR_BADGE_LIMIT = 10 
 INACTIVITY_LIMIT = 180  # 3 Minutes
-GHOST_ID = -999 # Fake User ID
-
-# --- GHOST REPLIES ---
-GHOST_REPLIES = ["hy", "oii", "hey", "hlo", "da", "hello", "oi", "hloo"]
 
 # --- DATABASE CONNECTION ---
 if not MONGO_URL:
@@ -46,7 +39,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V34 Running!"
+def home(): return "Chai Bot V36 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -55,7 +48,6 @@ def run_web_server():
 queues = {'any': [], 'Male': [], 'Female': []}
 pairs = {} 
 last_activity = {} 
-ghost_sessions = {} 
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -124,25 +116,18 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("🔀 RANDOM (FREE)")],
         [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
         [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
-        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("📞 Feedback")] # Added Feedback Button
+        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("📞 Feedback")]
     ]
     markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
     text = "<b>Main Menu</b> 🏠\nPlease select an option 👇"
     
-    if update.message:
-        await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
-    elif update.callback_query:
-        await context.bot.send_message(chat_id=update.callback_query.message.chat.id, text=text, reply_markup=markup, parse_mode='HTML')
-
-async def send_menu_direct(context, chat_id):
-    buttons = [
-        [KeyboardButton("🔀 RANDOM (FREE)")],
-        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
-        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
-        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("📞 Feedback")]
-    ]
-    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    await context.bot.send_message(chat_id, "<b>Main Menu</b> 🏠\nPlease select an option 👇", reply_markup=markup, parse_mode='HTML')
+    try:
+        if update.message:
+            await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
+        elif update.callback_query:
+            await context.bot.send_message(chat_id=update.callback_query.message.chat.id, text=text, reply_markup=markup, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Menu error: {e}")
 
 # --- BACKGROUND TASK ---
 def check_inactivity_loop(application):
@@ -152,8 +137,6 @@ def check_inactivity_loop(application):
         active_pairs = list(pairs.items())
         
         for user_id, partner_id in active_pairs:
-            if partner_id == GHOST_ID: continue
-            
             last_time = last_activity.get(user_id, current_time)
             if current_time - last_time > INACTIVITY_LIMIT:
                 try:
@@ -211,26 +194,18 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     msg = ' '.join(context.args)
-    
     if not msg:
-        await update.message.reply_text("⚠️ <b>Usage:</b> /feedback [your message]\n\nExample: <code>/feedback I found a bug!</code>", parse_mode='HTML')
+        await update.message.reply_text("⚠️ <b>Usage:</b> /feedback [message]", parse_mode='HTML')
         return
-
     if ADMIN_ID != 0:
         try:
-            user_info = f"👤 {html.escape(update.effective_user.first_name)} (`{user_id}`)"
-            await context.bot.send_message(ADMIN_ID, f"📩 <b>New Feedback</b>\nFrom: {user_info}\n\n📝 <b>Message:</b>\n{html.escape(msg)}", parse_mode='HTML')
-            await update.message.reply_text("✅ <b>Feedback sent to Admin!</b>")
-        except Exception as e:
-            logger.error(f"Feedback error: {e}")
-            await update.message.reply_text("❌ Error sending feedback.")
-    else:
-        await update.message.reply_text("⚠️ Admin ID not set.")
+            await context.bot.send_message(ADMIN_ID, f"📩 <b>Feedback:</b>\n{html.escape(msg)}\nFrom: {user_id}", parse_mode='HTML')
+            await update.message.reply_text("✅ Sent!")
+        except: await update.message.reply_text("❌ Error.")
 
 # --- RATING SYSTEM ---
 
 async def send_rating_prompt(context, chat_id, partner_id):
-    if partner_id == GHOST_ID: return 
     try:
         keyboard = [[InlineKeyboardButton("👍 Good", callback_data=f"rate_good_{partner_id}"), InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{partner_id}")]]
         await context.bot.send_message(chat_id, "📝 <b>How was your partner?</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
@@ -246,7 +221,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER ---
+# --- CHAT & FIND PARTNER (REAL USERS ONLY) ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -271,6 +246,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_gender = user_data['gender']
     
+    # Add Self to Queue
     if user_id not in queues['any']:
         queues['any'].append(user_id)
         if user_gender == "Male": queues['Male'].append(user_id)
@@ -279,89 +255,47 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # 2. CHECK LOOP
-    found_real = False
-    kicked_ghost = False
+    # CHECK QUEUE IMMEDIATELY
+    available = queues[target_gender] if target_gender != 'any' else queues['any']
+    blocked = user_data.get('blocked_users', [])
     
-    for i in range(15): # 30 seconds wait (Strict Priority)
-        if user_id in pairs: return 
+    if len(available) > 1:
+        for partner in available:
+            p_data = get_user(partner)
+            if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
+                # Connect
+                for q in queues.values():
+                    if user_id in q: q.remove(user_id)
+                    if partner in q: q.remove(partner)
+                
+                pairs[user_id] = partner
+                pairs[partner] = user_id
+                
+                last_activity[user_id] = time.time()
+                last_activity[partner] = time.time()
+                
+                my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
+                p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
 
-        available = queues[target_gender] if target_gender != 'any' else queues['any']
-        blocked = user_data.get('blocked_users', [])
-        
-        if len(available) > 1:
-            for partner in available:
-                p_data = get_user(partner)
-                if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
-                    for q in queues.values():
-                        if user_id in q: q.remove(user_id)
-                        if partner in q: q.remove(partner)
-                    
-                    pairs[user_id] = partner
-                    pairs[partner] = user_id
-                    
-                    last_activity[user_id] = time.time()
-                    last_activity[partner] = time.time()
-                    
-                    my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
-                    p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
-
-                    markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
-                    
-                    await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
-                    await context.bot.send_message(partner, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
-                    found_real = True
-                    return 
-
-        # KICK & WAIT LOGIC
-        if not found_real and not kicked_ghost:
-            for active_user, partner_id in list(pairs.items()):
-                if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
-                    
-                    if active_user in pairs: del pairs[active_user]
-                    if active_user in ghost_sessions: del ghost_sessions[active_user]
-                    
-                    try:
-                        await context.bot.send_message(active_user, "❌ <b>Partner left.</b>", parse_mode='HTML')
-                        await send_menu_direct(context, active_user) 
-                    except: pass
-                    
-                    kicked_ghost = True
-                    break
-
-        await asyncio.sleep(2) 
-    
-    # 3. IF NO ONE FOUND -> GHOST
-    if not found_real:
-        for q in queues.values():
-            if user_id in q: q.remove(user_id)
-            
-        if user_id in pairs: return 
-
-        pairs[user_id] = GHOST_ID
-        ghost_sessions[user_id] = {'replied': False} 
-        
-        fake_names = ["Abh***", "Rah***", "Saj***", "Viv***", "Arj***", "Moh***", "Roh***", "Adh***"]
-        fake_name = random.choice(fake_names)
-        
-        markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
-        await update.message.reply_text(f"💜 <b>Connected with new!</b>\nName: {fake_name}", reply_markup=markup, parse_mode='HTML')
+                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+                
+                await context.bot.send_message(user_id, f"💜 <b>Connected!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
+                await context.bot.send_message(partner, f"💜 <b>Connected!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
+                return 
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id in pairs:
         partner = pairs[user_id]
-        del pairs[user_id]
-        if user_id in last_activity: del last_activity[user_id]
-        if user_id in ghost_sessions: del ghost_sessions[user_id]
+        del pairs[user_id]; del pairs[partner]
         
-        if partner != GHOST_ID:
-            if partner in pairs: del pairs[partner]
-            if partner in last_activity: del last_activity[partner]
-            await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
-            await send_rating_prompt(context, user_id, partner)
-            await send_rating_prompt(context, partner, user_id)
+        if user_id in last_activity: del last_activity[user_id]
+        if partner in last_activity: del last_activity[partner]
+        
+        await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
+        await send_rating_prompt(context, user_id, partner)
+        await send_rating_prompt(context, partner, user_id)
         
         await show_main_menu(update, context)
     elif user_id in queues['any']:
@@ -375,16 +309,14 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in pairs:
         partner = pairs[user_id]
-        del pairs[user_id]
-        if user_id in last_activity: del last_activity[user_id]
-        if user_id in ghost_sessions: del ghost_sessions[user_id]
+        del pairs[user_id]; del pairs[partner]
         
-        if partner != GHOST_ID:
-            del pairs[partner]
-            if partner in last_activity: del last_activity[partner]
-            await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
-            await send_rating_prompt(context, user_id, partner)
-            await send_rating_prompt(context, partner, user_id)
+        if user_id in last_activity: del last_activity[user_id]
+        if partner in last_activity: del last_activity[partner]
+        
+        await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
+        await send_rating_prompt(context, user_id, partner)
+        await send_rating_prompt(context, partner, user_id)
         
         await find_partner(update, context)
     else: await show_main_menu(update, context)
@@ -409,10 +341,6 @@ async def show_account_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: return await update.message.reply_text("⚠️ Not in chat.")
-    if pairs[update.effective_user.id] == GHOST_ID: 
-        await update.message.reply_text("✅ <b>Reported!</b>", parse_mode='HTML')
-        await stop_chat(update, context)
-        return
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("Bad Words", callback_data='rep_abuse'), InlineKeyboardButton("18+", callback_data='rep_adult')], [InlineKeyboardButton("Cancel", callback_data='rep_cancel')]])
     await update.message.reply_text("⚠️ <b>Report:</b>", reply_markup=markup, parse_mode='HTML')
 
@@ -420,7 +348,7 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     uid = query.from_user.id
     if query.data == 'rep_cancel': return await query.edit_message_text("Cancelled.")
-    if uid in pairs and pairs[uid] != GHOST_ID:
+    if uid in pairs:
         pid = pairs[uid]; reason = "Adult" if query.data == 'rep_adult' else "Abuse"
         block_user_in_db(uid, pid); del pairs[uid]; del pairs[pid]
         if ADMIN_ID: 
@@ -502,25 +430,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_activity[user.id] = time.time()
         partner_id = pairs[user.id]
         
-        # --- GHOST CHAT LOGIC ---
-        if partner_id == GHOST_ID:
-            session = ghost_sessions.get(user.id, {'replied': False})
-            if not session['replied']:
-                await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
-                await asyncio.sleep(2) 
-                reply = random.choice(GHOST_REPLIES)
-                await update.message.reply_text(reply, parse_mode='HTML')
-                ghost_sessions[user.id]['replied'] = True
-                return
-            else:
-                await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
-                await asyncio.sleep(3) 
-                await update.message.reply_text("❌ <b>Partner left.</b>", parse_mode='HTML')
-                del pairs[user.id]
-                if user.id in ghost_sessions: del ghost_sessions[user.id]
-                await show_main_menu(update, context)
-                return
-
         # --- VIP MEDIA CHECK ---
         if not text:
             user_data = get_user(user.id)
@@ -559,7 +468,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("cast", broadcast_command))
-    app.add_handler(CommandHandler("feedback", feedback_command)) # Added Feedback Command
+    app.add_handler(CommandHandler("feedback", feedback_command))
     
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
@@ -571,7 +480,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V34 (Feedback Added) Started...")
+    print("Chai Bot V36 (NO GHOST - REAL CHAT ONLY) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
