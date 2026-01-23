@@ -27,7 +27,7 @@ INACTIVITY_LIMIT = 180  # 3 Minutes
 GHOST_ID = -999 # Fake User ID
 
 # --- GHOST REPLIES (Human-like) ---
-GHOST_REPLIES = ["hy", "oii", "hey", "hlo", "da", "hello", "oi"]
+GHOST_REPLIES = ["hy", "oii", "hey", "hlo", "da", "hello", "oi", "hloo"]
 
 # --- DATABASE CONNECTION ---
 if not MONGO_URL:
@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V22 Running!"
+def home(): return "Chai Bot V24 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -55,7 +55,7 @@ def run_web_server():
 queues = {'any': [], 'Male': [], 'Female': []}
 pairs = {} 
 last_activity = {} 
-ghost_sessions = {} # To track ghost chat state
+ghost_sessions = {} 
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -238,6 +238,8 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blocked = user_data.get('blocked_users', [])
     
     found_partner = False
+    
+    # Check Real Partners First
     if len(available) > 0:
         for partner in available:
             p_data = get_user(partner)
@@ -264,17 +266,24 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
     
     if not found_partner:
-        # NO REAL PARTNER FOUND -> CONNECT TO GHOST
-        pairs[user_id] = GHOST_ID
-        ghost_sessions[user_id] = {'replied': False} # Reset State
+        # NO REAL PARTNER -> WAIT THEN GHOST
+        mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
+        await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
         
-        # Fake Name Generation
-        fake_names = ["Abh***", "Rah***", "Saj***", "Viv***", "Arj***", "Moh***"]
+        # Realistic Delay (5-10s)
+        wait_time = random.randint(5, 10)
+        await asyncio.sleep(wait_time)
+        
+        # Double check if someone joined while waiting
+        if user_id in pairs: return # Already connected
+        
+        pairs[user_id] = GHOST_ID
+        ghost_sessions[user_id] = {'replied': False} 
+        
+        fake_names = ["Abh***", "Rah***", "Saj***", "Viv***", "Arj***", "Moh***", "Roh***", "Adh***"]
         fake_name = random.choice(fake_names)
         
         markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
-        await update.message.reply_text(f"🔍 <b>Searching...</b>", parse_mode='HTML')
-        await asyncio.sleep(1.5) # Fake delay
         await update.message.reply_text(f"💜 <b>Connected with new!</b>\nName: {fake_name}", reply_markup=markup, parse_mode='HTML')
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,7 +325,11 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_rating_prompt(context, user_id, partner)
             await send_rating_prompt(context, partner, user_id)
         
-        await update.message.reply_text("⏭ <b>Searching...</b>", parse_mode='HTML')
+        # --- FIXED DOUBLE SEARCHING MESSAGE ---
+        # Don't send "Searching..." here because find_partner() sends it.
+        # Just notify skipped.
+        # await update.message.reply_text("⏭ <b>Skipped.</b>", parse_mode='HTML') 
+        
         await find_partner(update, context)
     else: await show_main_menu(update)
 
@@ -341,7 +354,6 @@ async def show_account_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: return await update.message.reply_text("⚠️ Not in chat.")
     if pairs[update.effective_user.id] == GHOST_ID: 
-        # Fake Report for Ghost
         await update.message.reply_text("✅ <b>Reported!</b>", parse_mode='HTML')
         await stop_chat(update, context)
         return
@@ -443,7 +455,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Step 1: User sends message -> Ghost Replies ONE time
             if not session['replied']:
                 await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
-                await asyncio.sleep(2) # Make it look real
+                await asyncio.sleep(2) 
                 
                 reply = random.choice(GHOST_REPLIES)
                 await update.message.reply_text(reply, parse_mode='HTML')
@@ -455,7 +467,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Step 2: User sends message AGAIN -> Wait 3s -> Skip
             else:
                 await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
-                await asyncio.sleep(3) # Wait 3 seconds
+                await asyncio.sleep(3) 
                 
                 await update.message.reply_text("❌ <b>Partner left.</b>", parse_mode='HTML')
                 
@@ -506,7 +518,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V22 (Ghost Mode) Started...")
+    print("Chai Bot V24 (Fixed) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
