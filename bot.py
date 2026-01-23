@@ -36,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V11 Running!"
+def home(): return "Chai Bot V13 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -48,12 +48,14 @@ pairs = {}
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS (FIXED) ---
 def get_user(user_id):
     if db is None: return {}
-    return users_collection.find_one({'_id': user_id})
+    # FIX: If find_one returns None, return empty dict {} to avoid crash
+    data = users_collection.find_one({'_id': user_id})
+    return data if data else {}
 
-def create_user(user_id, first_name):
+def create_or_update_user(user_id, first_name):
     if db is None: return
     if not users_collection.find_one({'_id': user_id}):
         users_collection.insert_one({
@@ -66,7 +68,6 @@ def create_user(user_id, first_name):
             'referred_by': None
         })
     else:
-        # Update name if changed
         users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name}})
 
 def update_referral(referrer_id):
@@ -100,7 +101,6 @@ def has_link(text):
 
 def mask_name(name):
     if not name: return "User"
-    # ആദ്യത്തെ 2 അക്ഷരം എടുക്കുന്നു
     if len(name) <= 2: return name + "***"
     return name[:2] + "***"
 
@@ -110,25 +110,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Create or Update User
-    create_user(user_id, user.first_name)
-    
+    create_or_update_user(user_id, user.first_name)
     user_data = get_user(user_id)
     
-    # Check Referral
     args = context.args
     if args and args[0].isdigit():
         referrer_id = int(args[0])
-        # Check if already referred to avoid duplicate counting if needed
         if referrer_id != user_id and get_user(referrer_id) and user_data.get('referred_by') is None:
-            # Set referred_by to prevent future abuse (optional logic)
             users_collection.update_one({'_id': user_id}, {'$set': {'referred_by': referrer_id}})
             update_referral(referrer_id)
             try:
                 await context.bot.send_message(referrer_id, "🎉 **New Referral!**\nSomeone joined using your link.")
             except: pass
             
-    # Refresh Data
     user_data = get_user(user_id)
 
     if user_data.get('gender') is None:
@@ -175,8 +169,11 @@ async def show_main_menu(update: Update):
     )
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     text = update.message.text
+    
+    create_or_update_user(user_id, user.first_name)
     
     if user_id in pairs:
         await update.message.reply_text("⚠️ You are already in a chat! Use **Skip** or **Stop**.")
@@ -201,7 +198,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_gender = "any"
         update_search_mode(user_id, "any")
     
-    # Referrals Check
     referrals = user_data.get('referrals', 0)
     
     if target_gender == "Female" and referrals < PREMIUM_LIMIT:
@@ -212,7 +208,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals to search Boys.")
         return
 
-    # Queue Logic
     user_gender = user_data['gender']
     
     if user_id not in queues['any']:
@@ -220,7 +215,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_gender == "Male": queues['Male'].append(user_id)
         elif user_gender == "Female": queues['Female'].append(user_id)
 
-    # Search Message
     mode_text = "Partner"
     if target_gender == "Female": mode_text = "Girl"
     elif target_gender == "Male": mode_text = "Boy"
@@ -232,7 +226,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(available_list) > 1:
         for potential_partner in available_list:
-            partner_data = get_user(potential_partner)
+            partner_data = get_user(potential_partner) # This is now SAFE
             partner_blocked = partner_data.get('blocked_users', [])
             
             if (potential_partner != user_id and 
@@ -247,14 +241,13 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                # --- NEW CONNECTED MESSAGE ---
+                # Names
                 my_name = user_data.get('name', 'User')
                 partner_name = partner_data.get('name', 'User')
                 
-                msg_to_me = f"💜 **Connected with new!**\n👤 **Name:** {mask_name(partner_name)}"
-                msg_to_partner = f"💜 **Connected with new!**\n👤 **Name:** {mask_name(my_name)}"
+                msg_to_me = f"💜 **Connected with new!**\nName : {mask_name(partner_name)}"
+                msg_to_partner = f"💜 **Connected with new!**\nName : {mask_name(my_name)}"
                 
-                # Chat Buttons
                 chat_buttons = [
                     [KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")],
                     [KeyboardButton("⚠️ Report & Block")]
@@ -542,7 +535,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V11 (Name Reveal) Started...")
+    print("Chai Bot V13 (Connection Fixed) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
