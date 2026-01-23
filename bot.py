@@ -36,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V14 Running!"
+def home(): return "Chai Bot V15 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -100,9 +100,11 @@ def has_link(text):
 
 def mask_name(name):
     if not name: return "User"
-    # എറർ ഒഴിവാക്കാൻ പേര് ക്ലീൻ ചെയ്യുന്നു (Remove special chars)
+    # എറർ ഒഴിവാക്കാൻ പേര് പൂർണ്ണമായും ക്ലീൻ ചെയ്യുന്നു
+    # ചിഹ്നങ്ങൾ എല്ലാം കളയുന്നു (Bold/Italic crash ഒഴിവാക്കാൻ)
     clean_name = re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", "", name)
-    if not clean_name: return "User"
+    
+    if not clean_name: return "User" # പേരിൽ ചിഹ്നങ്ങൾ മാത്രമേ ഉള്ളൂ എങ്കിൽ
     
     if len(clean_name) <= 2: return clean_name + "***"
     return clean_name[:2] + "***"
@@ -242,7 +244,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                # Names Cleaned
+                # Names Cleaned (Updated Logic)
                 my_name = user_data.get('name', 'User')
                 partner_name = partner_data.get('name', 'User')
                 
@@ -255,8 +257,17 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 markup = ReplyKeyboardMarkup(chat_buttons, resize_keyboard=True)
                 
-                await context.bot.send_message(user_id, msg_to_me, reply_markup=markup, parse_mode='Markdown')
-                await context.bot.send_message(potential_partner, msg_to_partner, reply_markup=markup, parse_mode='Markdown')
+                try:
+                    await context.bot.send_message(user_id, msg_to_me, reply_markup=markup, parse_mode='Markdown')
+                except:
+                    # If failed, send without name
+                    await context.bot.send_message(user_id, "💜 **Connected!**", reply_markup=markup)
+                    
+                try:
+                    await context.bot.send_message(potential_partner, msg_to_partner, reply_markup=markup, parse_mode='Markdown')
+                except:
+                    await context.bot.send_message(potential_partner, "💜 **Connected!**", reply_markup=markup)
+                    
                 return
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -536,7 +547,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V14 (Fixes Applied) Started...")
+    print("Chai Bot V15 (Name Error & Conflict Fixed) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
