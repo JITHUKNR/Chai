@@ -16,7 +16,6 @@ from telegram.ext import (
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
-# നിങ്ങളുടെ അഡ്മിൻ ഐഡി ഇവിടെ കൊടുക്കുക
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 PREMIUM_LIMIT = 50 
 
@@ -37,7 +36,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot Running!"
+def home(): return "Chai Bot V9 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -63,6 +62,7 @@ def create_user(user_id, first_name):
             'gender': None,
             'referrals': 0,
             'blocked_users': [],
+            'last_mode': 'any', # സ്കിപ്പ് ചെയ്യുമ്പോൾ ഉപയോഗിക്കാൻ
             'referred_by': None
         })
 
@@ -74,9 +74,17 @@ def set_user_gender(user_id, gender):
     if db is None: return
     users_collection.update_one({'_id': user_id}, {'$set': {'gender': gender}})
 
+def update_search_mode(user_id, mode):
+    if db is None: return
+    users_collection.update_one({'_id': user_id}, {'$set': {'last_mode': mode}})
+
 def block_user_in_db(user_id, target_id):
     if db is None: return
     users_collection.update_one({'_id': user_id}, {'$addToSet': {'blocked_users': target_id}})
+
+def unblock_user_in_db(user_id, target_id):
+    if db is None: return
+    users_collection.update_one({'_id': user_id}, {'$pull': {'blocked_users': target_id}})
 
 def unblock_all_in_db(user_id):
     if db is None: return
@@ -140,7 +148,7 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu(update: Update):
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
-        [KeyboardButton("👧 Search Girls (Premium)"), KeyboardButton("👦 Search Boys (Premium)")],
+        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
         [KeyboardButton("💎 My Profile"), KeyboardButton("🌟 Donate Stars")],
         [KeyboardButton("❌ Stop Chat")]
     ]
@@ -155,7 +163,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if user_id in pairs:
-        await update.message.reply_text("⚠️ You are already in a chat! Click **Stop Chat** first.")
+        await update.message.reply_text("⚠️ You are already in a chat! Use **Skip** or **Stop**.")
         return
 
     user_data = get_user(user_id)
@@ -163,20 +171,33 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    target_gender = "any"
+    # --- SMART SEARCH LOGIC ---
+    # പഴയ മോഡ് എന്താണോ അത് തന്നെ സ്കിപ്പ് ചെയ്യുമ്പോഴും ഉപയോഗിക്കും
+    last_mode = user_data.get('last_mode', 'any')
+    target_gender = last_mode
+    
+    if text == "💜 GIRLS ONLY":
+        target_gender = "Female"
+        update_search_mode(user_id, "Female")
+    elif text == "💙 BOYS ONLY":
+        target_gender = "Male"
+        update_search_mode(user_id, "Male")
+    elif text == "🔀 RANDOM (FREE)":
+        target_gender = "any"
+        update_search_mode(user_id, "any")
+    
+    # Referrals Check
     referrals = user_data.get('referrals', 0)
     
-    if "Girls" in text:
-        if referrals < PREMIUM_LIMIT:
-            await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals.")
-            return
-        target_gender = "Female"
-    elif "Boys" in text:
-        if referrals < PREMIUM_LIMIT:
-            await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals.")
-            return
-        target_gender = "Male"
+    if target_gender == "Female" and referrals < PREMIUM_LIMIT:
+        await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals to search Girls.")
+        return
+    
+    if target_gender == "Male" and referrals < PREMIUM_LIMIT:
+        await update.message.reply_text(f"🔒 **Premium Feature!**\nYou need {PREMIUM_LIMIT} referrals to search Boys.")
+        return
 
+    # Queue Logic
     user_gender = user_data['gender']
     
     if user_id not in queues['any']:
@@ -184,7 +205,12 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_gender == "Male": queues['Male'].append(user_id)
         elif user_gender == "Female": queues['Female'].append(user_id)
 
-    await update.message.reply_text(f"🔍 **Searching...**\nWaiting for a partner... ☕️")
+    # Search Message
+    mode_text = "Partner"
+    if target_gender == "Female": mode_text = "Girl"
+    elif target_gender == "Male": mode_text = "Boy"
+    
+    await update.message.reply_text(f"🔍 **Searching for {mode_text}...**\nWaiting... ☕️")
     
     available_list = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked_list = user_data.get('blocked_users', [])
@@ -198,6 +224,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 potential_partner not in blocked_list and 
                 user_id not in partner_blocked):
                 
+                # Match Found
                 for q in queues.values():
                     if user_id in q: q.remove(user_id)
                     if potential_partner in q: q.remove(potential_partner)
@@ -205,7 +232,11 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pairs[user_id] = potential_partner
                 pairs[potential_partner] = user_id
                 
-                chat_buttons = [[KeyboardButton("❌ Stop Chat"), KeyboardButton("⚠️ Report & Block")]]
+                # --- CHAT BUTTONS WITH SKIP ---
+                chat_buttons = [
+                    [KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")],
+                    [KeyboardButton("⚠️ Report & Block")]
+                ]
                 markup = ReplyKeyboardMarkup(chat_buttons, resize_keyboard=True)
                 
                 await context.bot.send_message(user_id, "✅ **Partner Found!**\nSay Hi! 👋", reply_markup=markup)
@@ -219,10 +250,8 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partner = pairs[user_id]
         del pairs[user_id]
         del pairs[partner]
-        
         await context.bot.send_message(partner, "❌ **Partner left.**\nType /start to find new.")
         await show_main_menu(update)
-        
     elif user_id in queues['any']:
         for q in queues.values():
             if user_id in q: q.remove(user_id)
@@ -232,7 +261,23 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ You are not in a chat.")
         await show_main_menu(update)
 
-# --- REPORT SYSTEM ---
+async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in pairs:
+        partner = pairs[user_id]
+        del pairs[user_id]
+        del pairs[partner]
+        
+        await context.bot.send_message(partner, "❌ **Partner skipped you.**\nType /start to find new.")
+        await update.message.reply_text("⏭ **Skipped! Searching new...** ⏳")
+        
+        # Trigger Search Again (Smart Search uses Last Mode)
+        await find_partner(update, context)
+    else:
+        await update.message.reply_text("⚠️ You are not in a chat.")
+        await show_main_menu(update)
+
+# --- REPORT & BLOCK ---
 
 async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -241,13 +286,11 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = [
-        [InlineKeyboardButton("🤬 Bad Words / Abuse", callback_data='rep_abuse')],
-        [InlineKeyboardButton("🔞 18+ / Adult Content", callback_data='rep_adult')],
-        [InlineKeyboardButton("🤖 Spam / Scam", callback_data='rep_spam')],
-        [InlineKeyboardButton("🔙 Cancel", callback_data='rep_cancel')]
+        [InlineKeyboardButton("🤬 Bad Words", callback_data='rep_abuse'), InlineKeyboardButton("🔞 18+", callback_data='rep_adult')],
+        [InlineKeyboardButton("🤖 Spam", callback_data='rep_spam'), InlineKeyboardButton("🔙 Cancel", callback_data='rep_cancel')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⚠️ **Select a reason to Report & Block:**", reply_markup=reply_markup)
+    await update.message.reply_text("⚠️ **Report & Block:**", reply_markup=reply_markup)
 
 async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -269,59 +312,66 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
         del pairs[user_id]
         del pairs[partner_id]
         
-        # --- ADMIN REPORT ALERT (UPDATED) ---
         if ADMIN_ID != 0:
             try:
-                # യൂസർനെയിം എടുക്കുന്നു
                 reporter = await context.bot.get_chat(user_id)
                 target = await context.bot.get_chat(partner_id)
-                
                 r_user = f"@{reporter.username}" if reporter.username else "No Username"
                 t_user = f"@{target.username}" if target.username else "No Username"
-
                 await context.bot.send_message(
                     chat_id=ADMIN_ID, 
-                    text=(
-                        f"🚨 **REPORT ALERT**\n\n"
-                        f"👮‍♂️ **Reporter:** {r_user} (`{user_id}`)\n"
-                        f"🚫 **Target:** {t_user} (`{partner_id}`)\n"
-                        f"📝 **Reason:** {reason}"
-                    ),
-                    parse_mode='Markdown'
+                    text=f"🚨 **REPORT**\nBy: {r_user} ({user_id})\nTo: {t_user} ({partner_id})\nReason: {reason}"
                 )
             except: pass
 
-        await context.bot.send_message(partner_id, f"🚫 **You have been reported for {reason}.**\nChat ended.")
-        await query.edit_message_text(f"✅ **Reported & Blocked!**\nYou won't match with them again.")
+        await context.bot.send_message(partner_id, f"🚫 **Reported for {reason}.**\nChat ended.")
+        await query.edit_message_text(f"✅ **Reported & Blocked!**")
         await show_main_menu_callback(query, context)
     else:
-        await query.edit_message_text("⚠️ Chat already ended.")
+        await query.edit_message_text("⚠️ Chat ended.")
 
-async def show_main_menu_callback(query, context):
-    buttons = [
-        [KeyboardButton("🔀 RANDOM (FREE)")],
-        [KeyboardButton("👧 Search Girls (Premium)"), KeyboardButton("👦 Search Boys (Premium)")],
-        [KeyboardButton("💎 My Profile"), KeyboardButton("🌟 Donate Stars")],
-        [KeyboardButton("❌ Stop Chat")]
-    ]
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text="**Main Menu** 🏠\nPlease select an option 👇",
-        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
-        parse_mode='Markdown'
-    )
-
-# --- STARS & PROFILE SYSTEM ---
-
-async def handle_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_blocked_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == 'unblock_all':
-        user_id = query.from_user.id
-        unblock_all_in_db(user_id)
-        await query.answer("All users unblocked!")
-        await query.edit_message_text("✅ **All blocked users have been cleared.**")
+    user_id = query.from_user.id
+    user_data = get_user(user_id)
+    if not user_data: return
+    
+    blocked_list = user_data.get('blocked_users', [])
+    if not blocked_list:
+        await query.answer("No blocked users.")
+        await query.edit_message_text("✅ **You haven't blocked anyone.**")
+        return
 
-# --- STARS DONATION (10, 20, 50, 100, 500) ---
+    keyboard = []
+    for b_user_id in blocked_list[-10:]:
+        keyboard.append([InlineKeyboardButton(f"🔓 Unblock ID: {b_user_id}", callback_data=f"unblock_{b_user_id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔓 Unblock All", callback_data='unblock_all')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profile_back')])
+    await query.edit_message_text("🚫 **Blocked Users List:**", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+
+    if data == 'profile_back':
+        await my_profile_callback(update, context)
+        return
+
+    if data == 'unblock_all':
+        unblock_all_in_db(user_id)
+        await query.answer("All unblocked!")
+        await query.edit_message_text("✅ **All blocked users have been unblocked.**")
+        return
+
+    if data.startswith('unblock_'):
+        target_id = int(data.split('_')[1])
+        unblock_user_in_db(user_id, target_id)
+        await query.answer("User unblocked!")
+        await show_blocked_users(update, context)
+
+# --- STARS & PROFILE ---
 
 async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -329,42 +379,29 @@ async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⭐️ 100", callback_data='pay_100'), InlineKeyboardButton("⭐️ 500", callback_data='pay_500')],
         [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]
     ]
-    await update.message.reply_text(
-        "🌟 **Support Chai Bot!** ☕️\nChoose an amount to donate:", 
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("🌟 **Donate Stars:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
+    if query.data == 'pay_cancel': return await query.edit_message_text("❌ Cancelled.")
     
-    if data == 'pay_cancel':
-        await query.edit_message_text("❌ Donation cancelled.")
-        return
-        
-    if data.startswith('pay_'):
-        amount = int(data.split('_')[1])
-        await context.bot.send_invoice(
-            chat_id=query.from_user.id,
-            title="Support Chai Bot ☕️",
-            description=f"Donate {amount} Stars to help us keep the server running!",
-            payload=f"chai_donation_{amount}",
-            currency="XTR",
-            prices=[LabeledPrice("Donation", amount)],
-            provider_token=""
-        )
+    amount = int(query.data.split('_')[1])
+    await context.bot.send_invoice(
+        chat_id=query.from_user.id,
+        title="Support Chai Bot",
+        description=f"Donate {amount} Stars",
+        payload=f"chai_{amount}",
+        currency="XTR",
+        prices=[LabeledPrice("Donation", amount)],
+        provider_token=""
+    )
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    if not query.invoice_payload.startswith('chai_donation'):
-        await query.answer(ok=False, error_message="Something went wrong.")
-    else:
-        await query.answer(ok=True)
+    await update.pre_checkout_query.answer(ok=True)
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌟 **Thank you for your donation!** 🌟\nYour support means a lot to us! ☕️")
+    await update.message.reply_text("🌟 **Thanks for the donation!**")
 
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -373,39 +410,68 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     ref_count = user_data.get('referrals', 0)
     blocked_count = len(user_data.get('blocked_users', []))
-    bot_username = context.bot.username
-    link = f"https://t.me/{bot_username}?start={user_id}"
     
-    keyboard = [[InlineKeyboardButton("🔓 Unblock All Users", callback_data='unblock_all')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
+    keyboard = [[InlineKeyboardButton(f"🚫 Manage Blocked Users ({blocked_count})", callback_data='show_blocked')]]
+    
     await update.message.reply_text(
         f"👤 **Your Profile**\n\n"
-        f"Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
-        f"Blocked Users: {blocked_count}\n"
-        f"Link: `{link}`",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        f"🆔 ID: `{user_id}`\n"
+        f"👥 Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
+        f"🚫 Blocked: {blocked_count}\n\n"
+        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`",
+        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
     )
 
+async def my_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    user_data = get_user(user_id)
+    ref_count = user_data.get('referrals', 0)
+    blocked_count = len(user_data.get('blocked_users', []))
+    
+    keyboard = [[InlineKeyboardButton(f"🚫 Manage Blocked Users ({blocked_count})", callback_data='show_blocked')]]
+    
+    await query.edit_message_text(
+        f"👤 **Your Profile**\n\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"👥 Referrals: {ref_count}/{PREMIUM_LIMIT}\n"
+        f"🚫 Blocked: {blocked_count}\n\n"
+        f"🔗 Link: `https://t.me/{context.bot.username}?start={user_id}`",
+        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+    )
+
+async def show_main_menu_callback(query, context):
+    buttons = [
+        [KeyboardButton("🔀 RANDOM (FREE)")],
+        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
+        [KeyboardButton("💎 My Profile"), KeyboardButton("🌟 Donate Stars")],
+        [KeyboardButton("❌ Stop Chat")]
+    ]
+    await context.bot.send_message(chat_id=query.from_user.id, text="**Main Menu** 🏠", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='Markdown')
+
+# --- MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text
+    text = update.message.text 
 
     if text == "👦 I am Male" or text == "👧 I am Female":
         await set_gender(update, context)
     elif text == "🔀 RANDOM (FREE)":
         await find_partner(update, context)
-    elif "Search Girls" in text:
+    
+    elif text == "💜 GIRLS ONLY":
         await find_partner(update, context)
-    elif "Search Boys" in text:
+    elif text == "💙 BOYS ONLY":
         await find_partner(update, context)
-    elif "My Profile" in text:
+        
+    elif text == "💎 My Profile":
         await my_profile(update, context)
-    elif "Donate Stars" in text:
+    elif text == "🌟 Donate Stars":
         await donate_menu(update, context)
     elif text == "❌ Stop Chat":
         await stop_chat(update, context)
+    elif text == "⏭ Skip": # <--- SKIP BUTTON HANDLER
+        await skip_chat(update, context)
     elif text == "⚠️ Report & Block":
         await report_menu(update, context)
         
@@ -413,32 +479,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text and has_link(text):
             await update.message.reply_text("🚫 **Links are not allowed!**")
             return
-
         try:
             partner_id = pairs[user_id]
-            # 1. Typing Indicator
+            # Typing Indicator
             await context.bot.send_chat_action(chat_id=partner_id, action=constants.ChatAction.TYPING)
-            # 2. Send Message to Partner
+            # Copy (Supports Voice, Video, Text)
             await update.message.copy(chat_id=partner_id)
-            
-            # 3. ADMIN MONITOR (Updated)
             if ADMIN_ID != 0:
                 user = update.effective_user
-                username = f"@{user.username}" if user.username else "No Username"
-                
-                # Create Admin Log Text
-                log_head = f"👤 <b>{user.first_name}</b> ({username}) <code>{user.id}</code>"
-                
+                uname = f"@{user.username}" if user.username else "No User"
+                caption = f"👤 {user.first_name} ({uname})"
                 try:
-                    if text:
-                        # ടെക്സ്റ്റ് ആണെങ്കിൽ അത് നേരിട്ട് കാണിക്കുന്നു
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"{log_head}\n💬 {text}", parse_mode='HTML')
+                    if text: await context.bot.send_message(chat_id=ADMIN_ID, text=f"{caption}: {text}")
                     else:
-                        # മീഡിയ ആണെങ്കിൽ ഫോർവേഡ് ചെയ്യുന്നു
                         await update.message.forward(chat_id=ADMIN_ID)
-                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"👆 Media from {log_head}", parse_mode='HTML')
+                        await context.bot.send_message(chat_id=ADMIN_ID, text=f"👆 Media from {caption}")
                 except: pass
-
         except:
             await stop_chat(update, context)
     else:
@@ -451,16 +507,17 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     
-    # Handlers
     app.add_handler(CallbackQueryHandler(handle_report_callback, pattern='^rep_'))
-    app.add_handler(CallbackQueryHandler(handle_profile_callback, pattern='^unblock_all'))
+    app.add_handler(CallbackQueryHandler(show_blocked_users, pattern='^show_blocked$'))
+    app.add_handler(CallbackQueryHandler(handle_unblock_callback, pattern='^unblock_'))
+    app.add_handler(CallbackQueryHandler(handle_unblock_callback, pattern='^profile_back$'))
     app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^pay_'))
     
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot Final V5 (Admin Username & Stars) Started...")
+    print("Chai Bot V9 (Skip) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
