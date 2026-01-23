@@ -46,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V26 Running!"
+def home(): return "Chai Bot V27 Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -59,6 +59,7 @@ ghost_sessions = {}
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- HELPER FUNCTIONS ---
 def get_user(user_id):
@@ -122,6 +123,7 @@ def check_inactivity_loop(application):
     while True:
         time.sleep(30)
         current_time = time.time()
+        # Use list to avoid runtime error during iteration
         active_pairs = list(pairs.items())
         
         for user_id, partner_id in active_pairs:
@@ -208,7 +210,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER (GHOST BREAKER ADDED) ---
+# --- CHAT & FIND PARTNER ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -233,7 +235,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_gender = user_data['gender']
     
-    # 1. Add Self to Queue
     if user_id not in queues['any']:
         queues['any'].append(user_id)
         if user_gender == "Male": queues['Male'].append(user_id)
@@ -242,17 +243,16 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # 2. CHECK LOOP
+    # --- CHECK LOOP FOR REAL USERS ---
     found_real = False
     
-    for i in range(5): # Loop for 10 seconds (5 x 2s)
-        
-        if user_id in pairs: return # I got paired!
+    for i in range(5): 
+        if user_id in pairs: return 
 
-        # --- A. CHECK QUEUE FOR WAITING USERS ---
         available = queues[target_gender] if target_gender != 'any' else queues['any']
         blocked = user_data.get('blocked_users', [])
         
+        # A. Check Queue
         if len(available) > 1:
             for partner in available:
                 p_data = get_user(partner)
@@ -278,27 +278,19 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     found_real = True
                     return 
 
-        # --- B. GHOST BREAKER (STEAL USERS FROM GHOST) ---
-        # If queue is empty, check if anyone is talking to GHOST and free them!
+        # B. GHOST BREAKER
         if not found_real:
             for active_user, partner_id in list(pairs.items()):
-                # If someone (active_user) is talking to GHOST_ID
-                # And that user is not me
-                # And not blocked
                 if partner_id == GHOST_ID and active_user != user_id and active_user not in blocked:
                     
                     p_data = get_user(active_user)
                     
-                    # Gender Check logic (if needed, simplified here for 'any')
-                    # Force Disconnect them from Ghost
                     if active_user in pairs: del pairs[active_user]
-                    if active_user in ghost_sessions: del ghost_sessions[active_user]
+                    if active_user in ghost_sessions: del ghost_sessions[active_user] # Fix Clean up
                     
-                    # Remove me from queue
                     for q in queues.values():
                         if user_id in q: q.remove(user_id)
                     
-                    # Connect Me and Them
                     pairs[user_id] = active_user
                     pairs[active_user] = user_id
                     
@@ -310,7 +302,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
                     
-                    # Send messages
                     await context.bot.send_message(user_id, f"💜 <b>Connected with new!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
                     await context.bot.send_message(active_user, f"💜 <b>Connected with new!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
                     
@@ -475,7 +466,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- MAIN MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
+    user = update.effective_user
+    if not update.message: return # Safety check
     text = update.message.text
     
     if text in ["👦 I am Male", "👧 I am Female"]: await set_gender(update, context)
@@ -505,7 +497,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_chat_action(user.id, constants.ChatAction.TYPING)
                 await asyncio.sleep(3) 
                 await update.message.reply_text("❌ <b>Partner left.</b>", parse_mode='HTML')
-                del pairs[user.id]; del ghost_sessions[user.id]
+                del pairs[user.id]
+                if user.id in ghost_sessions: del ghost_sessions[user.id]
                 await show_main_menu(update)
                 return
 
@@ -516,6 +509,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🔒 <b>Premium Feature!</b>\nPhotos/Videos/Voice are for Premium users only.\n\n<i>Refer friends to unlock!</i>", parse_mode='HTML')
                 return
 
+        # --- SEND TO REAL PARTNER ---
         try: 
             await context.bot.send_chat_action(partner_id, constants.ChatAction.TYPING)
             await update.message.copy(partner_id)
@@ -525,7 +519,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if text: await context.bot.send_message(ADMIN_ID, f"👤 {user.first_name} ({user.id}): {text}")
                     else: await update.message.forward(ADMIN_ID)
                 except: pass
-        except: await stop_chat(update, context)
+        except Exception as e:
+            # LOG ERROR TO CONSOLE
+            print(f"❌ Message Error from {user.id} to {partner_id}: {e}")
+            await stop_chat(update, context)
     else: await show_main_menu(update)
 
 def main():
@@ -549,7 +546,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V26 (Real User Priority Fix) Started...")
+    print("Chai Bot V27 (Message Relay Fix) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
