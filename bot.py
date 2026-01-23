@@ -3,10 +3,10 @@ import logging
 import threading
 import re
 from flask import Flask
-import pymongo # ഡാറ്റാബേസ് പാക്കേജ്
+import pymongo
 from telegram import (
     Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, 
-    InlineKeyboardMarkup, LabeledPrice
+    InlineKeyboardMarkup, LabeledPrice, constants
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
@@ -15,19 +15,19 @@ from telegram.ext import (
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TOKEN")
-MONGO_URL = os.environ.get("MONGO_URL") # റെൻഡറിൽ കൊടുത്ത ലിങ്ക് എടുക്കുന്നു
+MONGO_URL = os.environ.get("MONGO_URL")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 PREMIUM_LIMIT = 50 
 
-# --- DATABASE CONNECTION (MongoDB) ---
+# --- DATABASE CONNECTION ---
 if not MONGO_URL:
     print("⚠️ MONGO_URL is missing! Data will not be saved.")
     db = None
 else:
     try:
         client = pymongo.MongoClient(MONGO_URL)
-        db = client['ChaiBot'] # ഡാറ്റാബേസ് പേര്
-        users_collection = db['users'] # യൂസർമാരുടെ വിവരങ്ങൾ
+        db = client['ChaiBot']
+        users_collection = db['users']
         print("✅ Connected to MongoDB!")
     except Exception as e:
         print(f"❌ Database Error: {e}")
@@ -36,21 +36,19 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot with Database Running!"
+def home(): return "Chai Bot Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
 
-# --- MEMORY (Temporary) ---
-# Queue and Pairs are temporary (active chats break on restart anyway)
+# --- MEMORY ---
 queues = {'any': [], 'Male': [], 'Female': []}
 pairs = {} 
 
 # --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- HELPER FUNCTIONS (DB) ---
-
+# --- HELPER FUNCTIONS ---
 def get_user(user_id):
     if db is None: return {}
     return users_collection.find_one({'_id': user_id})
@@ -69,31 +67,19 @@ def create_user(user_id, first_name):
 
 def update_referral(referrer_id):
     if db is None: return
-    users_collection.update_one(
-        {'_id': referrer_id},
-        {'$inc': {'referrals': 1}} # കൗണ്ട് 1 കൂട്ടുന്നു
-    )
+    users_collection.update_one({'_id': referrer_id}, {'$inc': {'referrals': 1}})
 
 def set_user_gender(user_id, gender):
     if db is None: return
-    users_collection.update_one(
-        {'_id': user_id},
-        {'$set': {'gender': gender}}
-    )
+    users_collection.update_one({'_id': user_id}, {'$set': {'gender': gender}})
 
 def block_user_in_db(user_id, target_id):
     if db is None: return
-    users_collection.update_one(
-        {'_id': user_id},
-        {'$addToSet': {'blocked_users': target_id}} # ഡ്യൂപ്ലിക്കേറ്റ് വരാതെ ചേർക്കുന്നു
-    )
+    users_collection.update_one({'_id': user_id}, {'$addToSet': {'blocked_users': target_id}})
 
 def unblock_all_in_db(user_id):
     if db is None: return
-    users_collection.update_one(
-        {'_id': user_id},
-        {'$set': {'blocked_users': []}}
-    )
+    users_collection.update_one({'_id': user_id}, {'$set': {'blocked_users': []}})
 
 def has_link(text):
     if not text: return False
@@ -106,28 +92,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Check User in DB
     user_data = get_user(user_id)
     
     if not user_data:
-        # Create New User
         create_user(user_id, user.first_name)
-        
-        # Check Referral
         args = context.args
         if args and args[0].isdigit():
             referrer_id = int(args[0])
-            # സ്വന്തം ലിങ്ക് അല്ല, റെഫറർ നിലവിലുണ്ട് എന്ന് ഉറപ്പാക്കുന്നു
             if referrer_id != user_id and get_user(referrer_id):
-                update_referral(referrer_id) # DB Update
+                update_referral(referrer_id)
                 try:
                     await context.bot.send_message(referrer_id, "🎉 **New Referral!**\nSomeone joined using your link.")
                 except: pass
-        
-        # Refresh Data
         user_data = get_user(user_id)
 
-    # If gender is NOT set
     if user_data.get('gender') is None:
         buttons = [[KeyboardButton("👦 I am Male"), KeyboardButton("👧 I am Female")]]
         await update.message.reply_text(
@@ -153,7 +131,7 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     gender = "Male" if text == "👦 I am Male" else "Female"
-    set_user_gender(user_id, gender) # DB Save
+    set_user_gender(user_id, gender)
     
     await update.message.reply_text(f"✅ Gender set to **{gender}**!")
     await show_main_menu(update)
@@ -212,7 +190,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(available_list) > 1:
         for potential_partner in available_list:
-            # Check Partner's Block List from DB
             partner_data = get_user(potential_partner)
             partner_blocked = partner_data.get('blocked_users', [])
             
@@ -250,7 +227,6 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id in q: q.remove(user_id)
         await update.message.reply_text("🛑 **Search Stopped.**")
         await show_main_menu(update)
-    
     else:
         await update.message.reply_text("⚠️ You are not in a chat.")
         await show_main_menu(update)
@@ -273,7 +249,6 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     data = query.data
     user_id = query.from_user.id
 
@@ -287,9 +262,7 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
         if data == 'rep_adult': reason = "Adult Content"
         elif data == 'rep_spam': reason = "Spam"
 
-        # Block in DB
         block_user_in_db(user_id, partner_id)
-
         del pairs[user_id]
         del pairs[partner_id]
         
@@ -325,7 +298,7 @@ async def handle_profile_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     if query.data == 'unblock_all':
         user_id = query.from_user.id
-        unblock_all_in_db(user_id) # DB Clear
+        unblock_all_in_db(user_id)
         await query.answer("All users unblocked!")
         await query.edit_message_text("✅ **All blocked users have been cleared.**")
 
@@ -399,7 +372,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            await update.message.copy(chat_id=pairs[user_id])
+            # --- TYPING INDICATOR ADDED HERE ---
+            partner_id = pairs[user_id]
+            
+            # Send 'Typing...' status to partner
+            await context.bot.send_chat_action(chat_id=partner_id, action=constants.ChatAction.TYPING)
+            
+            # Copy Message
+            await update.message.copy(chat_id=partner_id)
+            
+            # Admin Monitor
             if ADMIN_ID != 0:
                 try: await update.message.forward(chat_id=ADMIN_ID)
                 except: pass
@@ -420,7 +402,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot Database Version Started...")
+    print("Chai Bot Final V2 Started...")
     app.run_polling()
 
 if __name__ == "__main__":
