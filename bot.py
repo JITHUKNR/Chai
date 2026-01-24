@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import time
+import asyncio
 from flask import Flask
 import pymongo
 from telegram import (
@@ -38,7 +39,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V40 (Best Logs) Running!"
+def home(): return "Chai Bot V41 (Animation) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -247,7 +248,16 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_gender == "Female": queues['Female'].append(user_id)
 
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
-    await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
+    
+    # --- ANIMATION START ---
+    msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}.</b> ☕️", parse_mode='HTML')
+    try:
+        await asyncio.sleep(0.5)
+        await msg.edit_text(f"🔍 <b>Searching for {mode_text}..</b> ☕️", parse_mode='HTML')
+        await asyncio.sleep(0.5)
+        await msg.edit_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
+    except: pass
+    # --- ANIMATION END ---
     
     available = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked = user_data.get('blocked_users', [])
@@ -433,7 +443,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.copy(partner_id)
             last_activity[partner_id] = time.time()
             
-            # --- SUPER CLEAN ADMIN LOGS (V40) ---
+            # --- SUPER CLEAN ADMIN LOGS (V41) ---
             if ADMIN_ID:
                 p_data = get_user(partner_id)
                 p_name = html.escape(p_data.get('name', 'Unknown'))
@@ -482,7 +492,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V40 (Log Fix) Started...")
+    print("Chai Bot V41 (Animation & Logs) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
