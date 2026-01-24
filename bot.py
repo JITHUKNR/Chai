@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 import asyncio
-import re # --- REGEX മൊഡ്യൂൾ ഇംപോർട്ട് ചെയ്തു ---
+import re # --- REGEX FOR SECURITY ---
 from flask import Flask
 import pymongo
 from telegram import (
@@ -24,10 +24,8 @@ PREMIUM_LIMIT = 50
 STAR_BADGE_LIMIT = 10 
 INACTIVITY_LIMIT = 180 
 
-# --- LINK & USERNAME BLOCKING PATTERNS ---
-# ലിങ്കുകൾ തിരിച്ചറിയാനുള്ള പാറ്റേൺ (http, https, www, .com, t.me മുതലായവ)
+# --- REGEX PATTERNS FOR BLOCKING ---
 LINK_PATTERN = re.compile(r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9\.-]+\.[a-zA-Z]{2,}(/\S*)?|t\.me/[^\s]+)', re.IGNORECASE)
-# യൂസർനെയിം തിരിച്ചറിയാനുള്ള പാറ്റേൺ (@ ൽ തുടങ്ങുന്നവ)
 USERNAME_PATTERN = re.compile(r'@\w+')
 
 # --- DATABASE CONNECTION ---
@@ -46,7 +44,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V44 (Gifting) Running!"
+def home(): return "Chai Bot V49 (Correct Gifts + Security) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -316,13 +314,16 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
         await send_rating_prompt(context, user_id, partner)
         await send_rating_prompt(context, partner, user_id)
+        await update.message.reply_text("✅ <b>Chat ended.</b> Returning to main menu...", parse_mode='HTML')
         await show_main_menu(update, context)
     elif user_id in queues['any']:
         for q in queues.values(): 
             if user_id in q: q.remove(user_id)
-        await update.message.reply_text("🛑 <b>Stopped.</b>", parse_mode='HTML')
+        await update.message.reply_text("🛑 <b>Searching stopped.</b> Returning to main menu...", parse_mode='HTML')
         await show_main_menu(update, context)
-    else: await show_main_menu(update, context)
+    else:
+        await update.message.reply_text("🏠 <b>Returning to Main Menu.</b>", parse_mode='HTML')
+        await show_main_menu(update, context)
 
 async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -415,18 +416,32 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
     await msg.edit_text(f"✅ Sent to {success} users.")
 
-# --- GIFTING SYSTEM ---
+# --- UPDATED GIFTING SYSTEM (1-10 Stars - CORRECT VERSION) ---
 async def gift_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: 
         return await update.message.reply_text("⚠️ You need to be in a chat to send gifts!")
     
+    # New 3x3 Grid Menu with 9 options (1-10 Stars)
     kb = [
-        [InlineKeyboardButton("🌹 Rose (1 ⭐️)", callback_data='gift_1_Rose')],
-        [InlineKeyboardButton("☕️ Coffee (10 ⭐️)", callback_data='gift_10_Coffee')],
-        [InlineKeyboardButton("💍 Ring (50 ⭐️)", callback_data='gift_50_Ring')],
-        [InlineKeyboardButton("❌ Cancel", callback_data='gift_cancel')]
+        # Row 1: Small Gifts
+        [InlineKeyboardButton("🍬 Candy (1 ⭐️)", callback_data='gift_1_Candy'),
+         InlineKeyboardButton("🌹 Rose (2 ⭐️)", callback_data='gift_2_Rose'),
+         InlineKeyboardButton("🍫 Choco (3 ⭐️)", callback_data='gift_3_Choco')],
+         
+        # Row 2: Medium Gifts
+        [InlineKeyboardButton("🍦 Ice Cream (5 ⭐️)", callback_data='gift_5_IceCream'),
+         InlineKeyboardButton("🍪 Cookie (6 ⭐️)", callback_data='gift_6_Cookie'),
+         InlineKeyboardButton("🧸 Teddy (8 ⭐️)", callback_data='gift_8_Teddy')],
+         
+        # Row 3: Premium Small Gifts
+        [InlineKeyboardButton("☕️ Coffee (9 ⭐️)", callback_data='gift_9_Coffee'),
+         InlineKeyboardButton("🍰 Cake (10 ⭐️)", callback_data='gift_10_Cake'),
+         InlineKeyboardButton("💐 Bouquet (10 ⭐️)", callback_data='gift_10_Bouquet')],
+         
+        # Cancel Button
+        [InlineKeyboardButton("❌ Close Menu", callback_data='gift_cancel')]
     ]
-    await update.message.reply_text("🎁 <b>Select a Gift:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+    await update.message.reply_text("🎁 <b>Select a Gift for your Partner:</b>\n<i>(Price range: 1-10 Stars)</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
 async def handle_gift_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
@@ -481,24 +496,15 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     payload = update.message.successful_payment.invoice_payload
     
+    # Handle Gift Payment
     if payload.startswith('gift_'):
-        # Format: gift_PARTNERID_ITEM
         parts = payload.split('_')
         partner_id = int(parts[1])
         item_name = parts[2]
-        
-        # Send notification to User
         await update.message.reply_text(f"✅ <b>Gift Sent!</b>\nYou sent a {item_name}!", parse_mode='HTML')
-        
-        # Send notification to Partner (if still connected or not)
         try:
-            await context.bot.send_message(
-                partner_id, 
-                f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", 
-                parse_mode='HTML'
-            )
+            await context.bot.send_message(partner_id, f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", parse_mode='HTML')
         except: pass
-        
     else:
         # Donation
         await update.message.reply_text("🌟 <b>Thanks for the support!</b>", parse_mode='HTML')
@@ -596,7 +602,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V44 (Gifting Added + Security) Started...")
+    print("Chai Bot V49 (Correct Gifts + Security) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
