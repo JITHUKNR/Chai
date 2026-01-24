@@ -38,7 +38,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V39 Running!"
+def home(): return "Chai Bot V40 (Best Logs) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -58,12 +58,14 @@ def get_user(user_id):
     data = users_collection.find_one({'_id': user_id})
     return data if data else {}
 
-def create_or_update_user(user_id, first_name):
+def create_or_update_user(user_id, first_name, username):
     if db is None: return
+    safe_username = username if username else "None"
     if not users_collection.find_one({'_id': user_id}):
         users_collection.insert_one({
             '_id': user_id,
             'name': first_name,
+            'username': safe_username,
             'gender': None,
             'referrals': 0,
             'good_karma': 0,
@@ -73,7 +75,7 @@ def create_or_update_user(user_id, first_name):
             'referred_by': None
         })
     else:
-        users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name}})
+        users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name, 'username': safe_username}})
 
 def update_referral(referrer_id):
     if db is None: return
@@ -103,13 +105,10 @@ def unblock_user_in_db(user_id, target_id):
 def mask_name(name, good_karma=0):
     if not name: return "User"
     safe_name = html.escape(name)
-    masked = safe_name
-    if len(safe_name) > 2: masked = safe_name[:2] + "***"
-    else: masked = safe_name + "***"
-    if good_karma >= STAR_BADGE_LIMIT: return f"⭐️ {masked}"
-    return masked
+    masked = safe_name[:2] + "***" if len(safe_name) > 2 else safe_name + "***"
+    return f"⭐️ {masked}" if good_karma >= STAR_BADGE_LIMIT else masked
 
-# --- HELPER: SAFE SEND MENU ---
+# --- UI HELPERS ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [KeyboardButton("🔀 RANDOM (FREE)")],
@@ -155,7 +154,7 @@ def async_send(app, chat_id, text):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    create_or_update_user(user_id, user.first_name)
+    create_or_update_user(user_id, user.first_name, user.username)
     
     args = context.args
     if args and args[0].isdigit():
@@ -222,7 +221,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
-    create_or_update_user(user_id, update.effective_user.first_name)
+    create_or_update_user(user_id, update.effective_user.first_name, update.effective_user.username)
     
     if user_id in pairs:
         await update.message.reply_text("⚠️ Use <b>Skip</b> or <b>Stop</b>.", parse_mode='HTML')
@@ -317,7 +316,9 @@ async def show_referral_page(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_account_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; data = get_user(uid)
     status = "✅ Premium" if data.get('referrals', 0) >= PREMIUM_LIMIT else "❌ Free"
+    safe_user = data.get('username', 'None')
     text = (f"👤 <b>MY ACCOUNT</b>\n\n📛 <b>Name:</b> {html.escape(data.get('name', 'User'))}\n"
+            f"🔗 <b>User:</b> @{safe_user}\n"
             f"🆔 <b>ID:</b> <code>{uid}</code>\n🎖 <b>Status:</b> {status}\n"
             f"👍 <b>Good Karma:</b> {data.get('good_karma', 0)}\n"
             f"🚫 <b>Blocked:</b> {len(data.get('blocked_users', []))}")
@@ -402,6 +403,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return 
     text = update.message.text
     
+    # Save Username Here
+    create_or_update_user(user.id, user.first_name, user.username)
+
     if text in ["👦 I am Male", "👧 I am Female"]: await set_gender(update, context)
     elif text == "🔀 RANDOM (FREE)" or text == "💜 GIRLS ONLY" or text == "💙 BOYS ONLY": await find_partner(update, context)
     elif text == "REFER AND EARN PREMIUM 🤑": await show_referral_page(update, context)
@@ -429,18 +433,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.copy(partner_id)
             last_activity[partner_id] = time.time()
             
-            # --- IMPROVED ADMIN LOGS ---
+            # --- SUPER CLEAN ADMIN LOGS (V40) ---
             if ADMIN_ID:
+                p_data = get_user(partner_id)
+                p_name = html.escape(p_data.get('name', 'Unknown'))
+                
+                s_name = html.escape(user.first_name)
+                s_user = f"@{user.username}" if user.username else "NoUser"
+                
                 log_text = (
-                    f"💬 <b>ചാറ്റ് ലോഗ്</b>\n"
-                    f"👤 <b>അയച്ചയാൾ:</b> {html.escape(user.first_name)} (<code>{user.id}</code>)\n"
-                    f"➡️ <b>സ്വീകർത്താവ്:</b> (<code>{partner_id}</code>)\n"
-                    f"------------------------\n"
-                    f"📝 <b>മെസ്സേജ്:</b>\n{html.escape(text) if text else '🖼 <i>മീഡിയ ഫയൽ</i>'}"
+                    f"🔁 <b>Chat Relay</b>\n"
+                    f"🗣 <b>{s_name}</b> ({s_user}) ➡️ <b>{p_name}</b>\n"
+                    f"📄 <i>{html.escape(text) if text else 'Media File 📁'}</i>"
                 )
-                await context.bot.send_message(ADMIN_ID, log_text, parse_mode='HTML')
-                if not text:
-                    await update.message.forward(ADMIN_ID)
+                try: await context.bot.send_message(ADMIN_ID, log_text, parse_mode='HTML')
+                except: pass
 
         except Exception as e:
             logger.error(f"Error sending message: {e}")
@@ -475,7 +482,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V39 (Fixed & Improved Logs) Started...")
+    print("Chai Bot V40 (Log Fix) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
