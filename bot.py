@@ -38,7 +38,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V38 (Fixed) Running!"
+def home(): return "Chai Bot V39 (Perfect Logs) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -75,15 +75,6 @@ def create_or_update_user(user_id, first_name):
     else:
         users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name}})
 
-def update_referral(referrer_id):
-    if db is None: return
-    users_collection.update_one({'_id': referrer_id}, {'$inc': {'referrals': 1}})
-
-def update_karma(user_id, is_good=True):
-    if db is None: return
-    field = 'good_karma' if is_good else 'bad_karma'
-    users_collection.update_one({'_id': user_id}, {'$inc': {field: 1}})
-
 def mask_name(name, good_karma=0):
     if not name: return "User"
     safe_name = html.escape(name)
@@ -109,16 +100,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     create_or_update_user(user.id, user.first_name)
-    # Referral check
-    if context.args and context.args[0].isdigit():
-        ref_id = int(context.args[0])
-        user_data = get_user(user.id)
-        if ref_id != user.id and get_user(ref_id) and user_data.get('referred_by') is None:
-            users_collection.update_one({'_id': user.id}, {'$set': {'referred_by': ref_id}})
-            update_referral(ref_id)
-            try: await context.bot.send_message(ref_id, "🎉 <b>New Referral!</b>", parse_mode='HTML')
-            except: pass
-    
     user_data = get_user(user.id)
     if user_data.get('gender') is None:
         buttons = [[KeyboardButton("👦 I am Male"), KeyboardButton("👧 I am Female")]]
@@ -128,67 +109,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in pairs: return await update.message.reply_text("⚠️ Already in chat.")
-    
     user_data = get_user(user_id)
-    text = update.message.text
-    mode = "Female" if text == "💜 GIRLS ONLY" else "Male" if text == "💙 BOYS ONLY" else "any"
+    mode = user_data.get('last_mode', 'any')
     
-    if mode != "any" and user_data.get('referrals', 0) < PREMIUM_LIMIT:
-        return await update.message.reply_text(f"🔒 Need {PREMIUM_LIMIT} referrals.")
-    
-    users_collection.update_one({'_id': user_id}, {'$set': {'last_mode': mode}})
     if user_id not in queues['any']:
         queues['any'].append(user_id)
         queues[user_data['gender']].append(user_id)
 
-    await update.message.reply_text("🔍 <b>Searching...</b>", parse_mode='HTML')
+    await update.message.reply_text("🔍 <b>Searching for Real Users...</b>", parse_mode='HTML')
     
     target = queues[mode] if mode != 'any' else queues['any']
     if len(target) > 1:
         for p in target:
-            if p != user_id and p not in user_data.get('blocked_users', []):
+            if p != user_id:
                 for q in queues.values():
                     if user_id in q: q.remove(user_id)
                     if p in q: q.remove(p)
                 pairs[user_id] = p; pairs[p] = user_id
                 last_activity[user_id] = last_activity[p] = time.time()
-                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
-                await context.bot.send_message(user_id, f"💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
-                await context.bot.send_message(p, f"💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
+                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")]], resize_keyboard=True)
+                await context.bot.send_message(user_id, "💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
+                await context.bot.send_message(p, "💜 <b>Connected!</b>", reply_markup=markup, parse_mode='HTML')
                 return
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
+    
     if text in ["👦 I am Male", "👧 I am Female"]:
         users_collection.update_one({'_id': user.id}, {'$set': {'gender': "Male" if "Male" in text else "Female"}})
         await show_main_menu(update, context)
-    elif text in ["🔀 RANDOM (FREE)", "💜 GIRLS ONLY", "💙 BOYS ONLY"]: await find_partner(update, context)
+    elif text == "🔀 RANDOM (FREE)": await find_partner(update, context)
     elif text == "❌ Stop Chat":
         if user.id in pairs:
             p = pairs[user.id]; del pairs[user.id]; del pairs[p]
             await context.bot.send_message(p, "❌ <b>Partner left.</b>", parse_mode='HTML')
         await show_main_menu(update, context)
     elif user.id in pairs:
-        try:
-            p = pairs[user.id]
-            await update.message.copy(p)
-            if ADMIN_ID:
-                log = f"💬 <b>Chat Log</b>\n👤 From: {user.id}\n➡️ To: {p}\n📝 Msg: {text if text else 'Media'}"
-                await context.bot.send_message(ADMIN_ID, log, parse_mode='HTML')
-        except: pass
+        p = pairs[user.id]
+        await update.message.copy(p)
+        # --- മനോഹരമായ അഡ്മിൻ ലോഗുകൾ ---
+        if ADMIN_ID:
+            log_msg = (
+                f"💬 <b>ചാറ്റ് ലോഗ്</b>\n"
+                f"👤 <b>അയച്ചയാൾ:</b> {html.escape(user.first_name)} (<code>{user.id}</code>)\n"
+                f"➡️ <b>സ്വീകർത്താവ്:</b> (<code>{p}</code>)\n"
+                f"------------------------\n"
+                f"📝 <b>മെസ്സേജ്:</b>\n{html.escape(text) if text else '🖼 <i>മീഡിയ ഫയൽ</i>'}"
+            )
+            await context.bot.send_message(ADMIN_ID, log_msg, parse_mode='HTML')
+            if not text: await update.message.forward(ADMIN_ID)
     else: await show_main_menu(update, context)
 
-# Payment handlers (Fixing NameError)
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(PreCheckoutQueryHandler(precheckout_callback)) # Now works
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("V38 Started...")
+    print("V39 Running...")
     app.run_polling()
 
 if __name__ == "__main__":
