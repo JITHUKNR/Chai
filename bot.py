@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import asyncio
+import re # --- REGEX മൊഡ്യൂൾ ഇംപോർട്ട് ചെയ്തു ---
 from flask import Flask
 import pymongo
 from telegram import (
@@ -23,6 +24,12 @@ PREMIUM_LIMIT = 50
 STAR_BADGE_LIMIT = 10 
 INACTIVITY_LIMIT = 180 
 
+# --- LINK & USERNAME BLOCKING PATTERNS ---
+# ലിങ്കുകൾ തിരിച്ചറിയാനുള്ള പാറ്റേൺ (http, https, www, .com, t.me മുതലായവ)
+LINK_PATTERN = re.compile(r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9\.-]+\.[a-zA-Z]{2,}(/\S*)?|t\.me/[^\s]+)', re.IGNORECASE)
+# യൂസർനെയിം തിരിച്ചറിയാനുള്ള പാറ്റേൺ (@ ൽ തുടങ്ങുന്നവ)
+USERNAME_PATTERN = re.compile(r'@\w+')
+
 # --- DATABASE CONNECTION ---
 if not MONGO_URL:
     db = None
@@ -39,7 +46,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V47 (Gifts Integrated) Running!"
+def home(): return "Chai Bot V44 (Gifting) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -249,7 +256,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     
-    # --- ANIMATION (from bot 9) ---
+    # --- ANIMATION V43 ---
     msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}</b>", parse_mode='HTML')
     try:
         await asyncio.sleep(0.5)
@@ -257,9 +264,8 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.5)
         await msg.edit_text(f"🔭 <b>Looking for a match...</b> 👀", parse_mode='HTML')
         await asyncio.sleep(0.5)
-        # Dot Animation Loop (3 Cycles)
         for i in range(3):
-            if user_id in pairs: break # Stop animation if matched!
+            if user_id in pairs: break 
             await msg.edit_text(f"✨ <b>Almost there.</b> 💖", parse_mode='HTML')
             await asyncio.sleep(0.3)
             await msg.edit_text(f"✨ <b>Almost there..</b> 💖", parse_mode='HTML')
@@ -290,7 +296,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
                 p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
 
-                # --- NEW CHAT KEYBOARD WITH GIFT (ADDED) ---
+                # --- NEW CHAT KEYBOARD WITH GIFT ---
                 markup = ReplyKeyboardMarkup([
                     [KeyboardButton("⏭ Skip"), KeyboardButton("🎁 Gift")],
                     [KeyboardButton("❌ Stop Chat"), KeyboardButton("⚠️ Report & Block")]
@@ -310,16 +316,13 @@ async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
         await send_rating_prompt(context, user_id, partner)
         await send_rating_prompt(context, partner, user_id)
-        await update.message.reply_text("✅ <b>Chat ended.</b> Returning to main menu...", parse_mode='HTML')
         await show_main_menu(update, context)
     elif user_id in queues['any']:
         for q in queues.values(): 
             if user_id in q: q.remove(user_id)
-        await update.message.reply_text("🛑 <b>Searching stopped.</b> Returning to main menu...", parse_mode='HTML')
+        await update.message.reply_text("🛑 <b>Stopped.</b>", parse_mode='HTML')
         await show_main_menu(update, context)
-    else:
-        await update.message.reply_text("🏠 <b>Returning to Main Menu.</b>", parse_mode='HTML')
-        await show_main_menu(update, context)
+    else: await show_main_menu(update, context)
 
 async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -412,32 +415,18 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
     await msg.edit_text(f"✅ Sent to {success} users.")
 
-# --- NEW GIFTING SYSTEM (ADDED TO BOT 9) ---
+# --- GIFTING SYSTEM ---
 async def gift_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: 
         return await update.message.reply_text("⚠️ You need to be in a chat to send gifts!")
     
-    # New 3x3 Grid Menu with 9 options (1-10 Stars)
     kb = [
-        # Row 1: Small Gifts
-        [InlineKeyboardButton("🍬 Candy (1 ⭐️)", callback_data='gift_1_Candy'),
-         InlineKeyboardButton("🌹 Rose (2 ⭐️)", callback_data='gift_2_Rose'),
-         InlineKeyboardButton("🍫 Choco (3 ⭐️)", callback_data='gift_3_Choco')],
-         
-        # Row 2: Medium Gifts
-        [InlineKeyboardButton("🍦 Ice Cream (5 ⭐️)", callback_data='gift_5_IceCream'),
-         InlineKeyboardButton("🍪 Cookie (6 ⭐️)", callback_data='gift_6_Cookie'),
-         InlineKeyboardButton("🧸 Teddy (8 ⭐️)", callback_data='gift_8_Teddy')],
-         
-        # Row 3: Premium Small Gifts
-        [InlineKeyboardButton("☕️ Coffee (9 ⭐️)", callback_data='gift_9_Coffee'),
-         InlineKeyboardButton("🍰 Cake (10 ⭐️)", callback_data='gift_10_Cake'),
-         InlineKeyboardButton("💐 Bouquet (10 ⭐️)", callback_data='gift_10_Bouquet')],
-         
-        # Cancel Button
-        [InlineKeyboardButton("❌ Close Menu", callback_data='gift_cancel')]
+        [InlineKeyboardButton("🌹 Rose (1 ⭐️)", callback_data='gift_1_Rose')],
+        [InlineKeyboardButton("☕️ Coffee (10 ⭐️)", callback_data='gift_10_Coffee')],
+        [InlineKeyboardButton("💍 Ring (50 ⭐️)", callback_data='gift_50_Ring')],
+        [InlineKeyboardButton("❌ Cancel", callback_data='gift_cancel')]
     ]
-    await update.message.reply_text("🎁 <b>Select a Gift for your Partner:</b>\n<i>(Price range: 1-10 Stars)</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+    await update.message.reply_text("🎁 <b>Select a Gift:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
 
 async def handle_gift_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
@@ -477,7 +466,7 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query; await query.answer()
     if query.data == 'pay_cancel': return await query.edit_message_text("Cancelled.")
     
-    # Handle Gifting Callbacks (ADDED)
+    # Handle Gifting Callbacks
     if query.data.startswith('gift_'):
         await handle_gift_callback(update, context)
         return
@@ -492,15 +481,24 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     payload = update.message.successful_payment.invoice_payload
     
-    # Handle Gift Payment (ADDED)
     if payload.startswith('gift_'):
+        # Format: gift_PARTNERID_ITEM
         parts = payload.split('_')
         partner_id = int(parts[1])
         item_name = parts[2]
+        
+        # Send notification to User
         await update.message.reply_text(f"✅ <b>Gift Sent!</b>\nYou sent a {item_name}!", parse_mode='HTML')
+        
+        # Send notification to Partner (if still connected or not)
         try:
-            await context.bot.send_message(partner_id, f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", parse_mode='HTML')
+            await context.bot.send_message(
+                partner_id, 
+                f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", 
+                parse_mode='HTML'
+            )
         except: pass
+        
     else:
         # Donation
         await update.message.reply_text("🌟 <b>Thanks for the support!</b>", parse_mode='HTML')
@@ -519,7 +517,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "REFER AND EARN PREMIUM 🤑": await show_referral_page(update, context)
     elif text == "👤 MY ACCOUNT": await show_account_page(update, context)
     elif text == "🌟 Donate Stars": await donate_menu(update, context)
-    elif text == "🎁 Gift": await gift_menu(update, context) # (ADDED)
+    elif text == "🎁 Gift": await gift_menu(update, context) # New Gift Handler
     elif text == "📞 Feedback": await update.message.reply_text("✉️ <b>Send Feedback</b>\nType <code>/feedback your_message</code>", parse_mode='HTML')
     elif text == "❌ Stop Chat": await stop_chat(update, context)
     elif text == "⏭ Skip": await skip_chat(update, context)
@@ -528,6 +526,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif user.id in pairs:
         last_activity[user.id] = time.time()
         partner_id = pairs[user.id]
+
+        # --- SECURITY: BLOCK LINKS & USERNAMES (പുതിയതായി ചേർത്തത്) ---
+        if text:
+            # ലിങ്കുകളോ യൂസർനെയിമുകളോ ഉണ്ടോ എന്ന് പരിശോധിക്കുന്നു
+            if LINK_PATTERN.search(text) or USERNAME_PATTERN.search(text):
+                await update.message.reply_text("🚫 <b>Links and usernames are not allowed!</b>\n<i>To prevent spam, do not share links or @handles.</i>", parse_mode='HTML')
+                return # മെസ്സേജ് പാർട്ണർക്ക് അയക്കാതെ ഇവിടെ വെച്ച് നിർത്തുന്നു
+        # ------------------------------------------------------------
         
         # --- VIP MEDIA CHECK ---
         if not text:
@@ -542,7 +548,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.copy(partner_id)
             last_activity[partner_id] = time.time()
             
-            # --- SUPER CLEAN ADMIN LOGS (from bot 9) ---
+            # --- SUPER CLEAN ADMIN LOGS ---
             if ADMIN_ID:
                 p_data = get_user(partner_id)
                 p_name = html.escape(p_data.get('name', 'Unknown'))
@@ -578,19 +584,19 @@ def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("cast", broadcast_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
-    app.add_handler(CommandHandler("gift", gift_menu)) # (ADDED)
+    app.add_handler(CommandHandler("gift", gift_menu)) # Alias
     
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_'))
     app.add_handler(CallbackQueryHandler(manage_blocked, pattern='^(show_blocked|unblock_|profile_back)'))
-    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^(pay_|gift_)')) # (UPDATED)
+    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^(pay_|gift_)')) # Update Pattern
     
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V47 (Gift System Integrated) Started...")
+    print("Chai Bot V44 (Gifting Added + Security) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
