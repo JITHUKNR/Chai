@@ -39,7 +39,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V43 (Dot Animation) Running!"
+def home(): return "Chai Bot V44 (Gifting) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -249,7 +249,7 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     
-    # --- ANIMATION START (DOT LOOP) ---
+    # --- ANIMATION V43 ---
     msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}</b>", parse_mode='HTML')
     try:
         await asyncio.sleep(0.5)
@@ -257,21 +257,16 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.5)
         await msg.edit_text(f"🔭 <b>Looking for a match...</b> 👀", parse_mode='HTML')
         await asyncio.sleep(0.5)
-        
-        # Dot Animation Loop (3 Cycles)
         for i in range(3):
-            if user_id in pairs: break # Stop animation if matched!
+            if user_id in pairs: break 
             await msg.edit_text(f"✨ <b>Almost there.</b> 💖", parse_mode='HTML')
             await asyncio.sleep(0.3)
             await msg.edit_text(f"✨ <b>Almost there..</b> 💖", parse_mode='HTML')
             await asyncio.sleep(0.3)
             await msg.edit_text(f"✨ <b>Almost there...</b> 💖", parse_mode='HTML')
             await asyncio.sleep(0.3)
-            
     except: pass
-    # --- ANIMATION END ---
     
-    # Safety Check: Did I get matched while waiting?
     if user_id in pairs: return
 
     available = queues[target_gender] if target_gender != 'any' else queues['any']
@@ -294,7 +289,11 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
                 p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
 
-                markup = ReplyKeyboardMarkup([[KeyboardButton("⏭ Skip"), KeyboardButton("❌ Stop Chat")], [KeyboardButton("⚠️ Report & Block")]], resize_keyboard=True)
+                # --- NEW CHAT KEYBOARD WITH GIFT ---
+                markup = ReplyKeyboardMarkup([
+                    [KeyboardButton("⏭ Skip"), KeyboardButton("🎁 Gift")],
+                    [KeyboardButton("❌ Stop Chat"), KeyboardButton("⚠️ Report & Block")]
+                ], resize_keyboard=True)
                 
                 await context.bot.send_message(user_id, f"💜 <b>Connected!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
                 await context.bot.send_message(partner, f"💜 <b>Connected!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
@@ -409,6 +408,49 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
     await msg.edit_text(f"✅ Sent to {success} users.")
 
+# --- GIFTING SYSTEM ---
+async def gift_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in pairs: 
+        return await update.message.reply_text("⚠️ You need to be in a chat to send gifts!")
+    
+    kb = [
+        [InlineKeyboardButton("🌹 Rose (1 ⭐️)", callback_data='gift_1_Rose')],
+        [InlineKeyboardButton("☕️ Coffee (10 ⭐️)", callback_data='gift_10_Coffee')],
+        [InlineKeyboardButton("💍 Ring (50 ⭐️)", callback_data='gift_50_Ring')],
+        [InlineKeyboardButton("❌ Cancel", callback_data='gift_cancel')]
+    ]
+    await update.message.reply_text("🎁 <b>Select a Gift:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+
+async def handle_gift_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    data = query.data
+    
+    if data == 'gift_cancel': 
+        return await query.edit_message_text("❌ Cancelled.")
+    
+    # Data format: gift_PRICE_NAME (e.g., gift_1_Rose)
+    parts = data.split('_')
+    price = int(parts[1])
+    item_name = parts[2]
+    
+    # Store partner ID in payload to know who gets the gift
+    user_id = query.from_user.id
+    if user_id not in pairs:
+        return await query.edit_message_text("⚠️ Chat ended, cannot send gift.")
+        
+    partner_id = pairs[user_id]
+    payload = f"gift_{partner_id}_{item_name}" # Payload format: gift_PARTNERID_ITEM
+    
+    await context.bot.send_invoice(
+        user_id, 
+        f"Send {item_name}", 
+        f"Send a virtual {item_name} to your chat partner!", 
+        payload, 
+        "XTR", 
+        [LabeledPrice(f"Gift: {item_name}", price)], 
+        ""
+    )
+
 async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("⭐️ 10", callback_data='pay_10'), InlineKeyboardButton("⭐️ 50", callback_data='pay_50')], [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]]
     await update.message.reply_text("🌟 <b>Donate:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
@@ -416,11 +458,43 @@ async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'pay_cancel': return await query.edit_message_text("Cancelled.")
+    
+    # Handle Gifting Callbacks
+    if query.data.startswith('gift_'):
+        await handle_gift_callback(update, context)
+        return
+
+    # Handle Donation
     amt = int(query.data.split('_')[1])
     await context.bot.send_invoice(query.from_user.id, "Support Chai", f"Donate {amt} Stars", f"chai_{amt}", "XTR", [LabeledPrice("Donation", amt)], "")
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("🌟 <b>Thanks!</b>", parse_mode='HTML')
+
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE): 
+    user = update.effective_user
+    payload = update.message.successful_payment.invoice_payload
+    
+    if payload.startswith('gift_'):
+        # Format: gift_PARTNERID_ITEM
+        parts = payload.split('_')
+        partner_id = int(parts[1])
+        item_name = parts[2]
+        
+        # Send notification to User
+        await update.message.reply_text(f"✅ <b>Gift Sent!</b>\nYou sent a {item_name}!", parse_mode='HTML')
+        
+        # Send notification to Partner (if still connected or not)
+        try:
+            await context.bot.send_message(
+                partner_id, 
+                f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", 
+                parse_mode='HTML'
+            )
+        except: pass
+        
+    else:
+        # Donation
+        await update.message.reply_text("🌟 <b>Thanks for the support!</b>", parse_mode='HTML')
 
 # --- MAIN MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -428,7 +502,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return 
     text = update.message.text
     
-    # Save Username Here
+    # Save Username
     create_or_update_user(user.id, user.first_name, user.username)
 
     if text in ["👦 I am Male", "👧 I am Female"]: await set_gender(update, context)
@@ -436,6 +510,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "REFER AND EARN PREMIUM 🤑": await show_referral_page(update, context)
     elif text == "👤 MY ACCOUNT": await show_account_page(update, context)
     elif text == "🌟 Donate Stars": await donate_menu(update, context)
+    elif text == "🎁 Gift": await gift_menu(update, context) # New Gift Handler
     elif text == "📞 Feedback": await update.message.reply_text("✉️ <b>Send Feedback</b>\nType <code>/feedback your_message</code>", parse_mode='HTML')
     elif text == "❌ Stop Chat": await stop_chat(update, context)
     elif text == "⏭ Skip": await skip_chat(update, context)
@@ -458,14 +533,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.copy(partner_id)
             last_activity[partner_id] = time.time()
             
-            # --- SUPER CLEAN ADMIN LOGS (V41/42) ---
+            # --- SUPER CLEAN ADMIN LOGS ---
             if ADMIN_ID:
                 p_data = get_user(partner_id)
                 p_name = html.escape(p_data.get('name', 'Unknown'))
-                
                 s_name = html.escape(user.first_name)
                 s_user = f"@{user.username}" if user.username else "NoUser"
-                
                 log_text = (
                     f"🔁 <b>Chat Relay</b>\n"
                     f"🗣 <b>{s_name}</b> ({s_user}) ➡️ <b>{p_name}</b>\n"
@@ -496,18 +569,19 @@ def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("cast", broadcast_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("gift", gift_menu)) # Alias
     
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_'))
     app.add_handler(CallbackQueryHandler(manage_blocked, pattern='^(show_blocked|unblock_|profile_back)'))
-    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^pay_'))
+    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^(pay_|gift_)')) # Update Pattern
     
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V43 (Dot Animation) Started...")
+    print("Chai Bot V44 (Gifting Added) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
