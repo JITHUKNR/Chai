@@ -10,7 +10,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
-    PreCheckoutQueryHandler, filters, ContextTypes
+    filters, ContextTypes
 )
 import html
 
@@ -39,7 +39,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V36 Running!"
+def home(): return "Chai Bot V37 (Pro Logs) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -190,7 +190,6 @@ async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Set to <b>{text}</b>!", parse_mode='HTML')
     await show_main_menu(update, context)
 
-# --- FEEDBACK COMMAND ---
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     msg = ' '.join(context.args)
@@ -202,8 +201,6 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(ADMIN_ID, f"📩 <b>Feedback:</b>\n{html.escape(msg)}\nFrom: {user_id}", parse_mode='HTML')
             await update.message.reply_text("✅ Sent!")
         except: await update.message.reply_text("❌ Error.")
-
-# --- RATING SYSTEM ---
 
 async def send_rating_prompt(context, chat_id, partner_id):
     try:
@@ -221,7 +218,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Thanks!")
         await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
 
-# --- CHAT & FIND PARTNER (REAL USERS ONLY) ---
+# --- CHAT & FIND PARTNER ---
 
 async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -246,7 +243,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_gender = user_data['gender']
     
-    # Add Self to Queue
     if user_id not in queues['any']:
         queues['any'].append(user_id)
         if user_gender == "Male": queues['Male'].append(user_id)
@@ -255,7 +251,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
     
-    # CHECK QUEUE IMMEDIATELY
     available = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked = user_data.get('blocked_users', [])
     
@@ -263,7 +258,6 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for partner in available:
             p_data = get_user(partner)
             if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
-                # Connect
                 for q in queues.values():
                     if user_id in q: q.remove(user_id)
                     if partner in q: q.remove(partner)
@@ -285,18 +279,14 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if user_id in pairs:
         partner = pairs[user_id]
         del pairs[user_id]; del pairs[partner]
-        
         if user_id in last_activity: del last_activity[user_id]
         if partner in last_activity: del last_activity[partner]
-        
         await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
         await send_rating_prompt(context, user_id, partner)
         await send_rating_prompt(context, partner, user_id)
-        
         await show_main_menu(update, context)
     elif user_id in queues['any']:
         for q in queues.values(): 
@@ -310,14 +300,11 @@ async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in pairs:
         partner = pairs[user_id]
         del pairs[user_id]; del pairs[partner]
-        
         if user_id in last_activity: del last_activity[user_id]
         if partner in last_activity: del last_activity[partner]
-        
         await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
         await send_rating_prompt(context, user_id, partner)
         await send_rating_prompt(context, partner, user_id)
-        
         await find_partner(update, context)
     else: await show_main_menu(update, context)
 
@@ -442,11 +429,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(partner_id, constants.ChatAction.TYPING)
             await update.message.copy(partner_id)
             last_activity[partner_id] = time.time()
+            
+            # --- IMPROVED ADMIN LOGS ---
             if ADMIN_ID:
-                try: 
-                    if text: await context.bot.send_message(ADMIN_ID, f"👤 {user.first_name} ({user.id}): {text}")
-                    else: await update.message.forward(ADMIN_ID)
-                except: pass
+                log_text = (
+                    f"💬 <b>ചാറ്റ് ലോഗ്</b>\n"
+                    f"👤 <b>അയച്ചയാൾ:</b> {html.escape(user.first_name)} (<code>{user.id}</code>)\n"
+                    f"➡️ <b>സ്വീകർത്താവ്:</b> (<code>{partner_id}</code>)\n"
+                    f"------------------------\n"
+                    f"📝 <b>മെസ്സേജ്:</b>\n{html.escape(text) if text else '🖼 <i>മീഡിയ ഫയൽ</i>'}"
+                )
+                await context.bot.send_message(ADMIN_ID, log_text, parse_mode='HTML')
+                if not text:
+                    await update.message.forward(ADMIN_ID)
+
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             await stop_chat(update, context)
@@ -460,27 +456,20 @@ def main():
     if not TOKEN: return
     threading.Thread(target=run_web_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    
     app.add_error_handler(error_handler)
-    
     threading.Thread(target=check_inactivity_loop, args=(app,), daemon=True).start()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("cast", broadcast_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
-    
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_'))
     app.add_handler(CallbackQueryHandler(manage_blocked, pattern='^(show_blocked|unblock_|profile_back)'))
     app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^pay_'))
-    
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
-    
-    print("Chai Bot V36 (NO GHOST - REAL CHAT ONLY) Started...")
+    print("Chai Bot V37 (Improved Logs) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
