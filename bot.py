@@ -39,7 +39,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V42 (Pro Animation) Running!"
+def home(): return "Chai Bot V43 (Dot Animation) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -249,18 +249,31 @@ async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
     
-    # --- PRO ANIMATION V42 ---
-    msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}...</b> ☕️", parse_mode='HTML')
+    # --- ANIMATION START (DOT LOOP) ---
+    msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}</b>", parse_mode='HTML')
     try:
-        await asyncio.sleep(0.7) # Wait for effect
+        await asyncio.sleep(0.5)
         await msg.edit_text(f"📡 <b>Scanning active users...</b> 📶", parse_mode='HTML')
-        await asyncio.sleep(0.7)
+        await asyncio.sleep(0.5)
         await msg.edit_text(f"🔭 <b>Looking for a match...</b> 👀", parse_mode='HTML')
-        await asyncio.sleep(0.7)
-        await msg.edit_text(f"✨ <b>Almost there...</b> 💖", parse_mode='HTML')
+        await asyncio.sleep(0.5)
+        
+        # Dot Animation Loop (3 Cycles)
+        for i in range(3):
+            if user_id in pairs: break # Stop animation if matched!
+            await msg.edit_text(f"✨ <b>Almost there.</b> 💖", parse_mode='HTML')
+            await asyncio.sleep(0.3)
+            await msg.edit_text(f"✨ <b>Almost there..</b> 💖", parse_mode='HTML')
+            await asyncio.sleep(0.3)
+            await msg.edit_text(f"✨ <b>Almost there...</b> 💖", parse_mode='HTML')
+            await asyncio.sleep(0.3)
+            
     except: pass
     # --- ANIMATION END ---
     
+    # Safety Check: Did I get matched while waiting?
+    if user_id in pairs: return
+
     available = queues[target_gender] if target_gender != 'any' else queues['any']
     blocked = user_data.get('blocked_users', [])
     
@@ -494,7 +507,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V42 (Super Animation) Started...")
+    print("Chai Bot V43 (Dot Animation) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
