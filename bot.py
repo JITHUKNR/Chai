@@ -44,7 +44,7 @@ else:
 # --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
-def home(): return "Chai Bot V49 (Correct Gifts + Security) Running!"
+def home(): return "Chai Bot V52 (Broadcast Command Renamed) Running!"
 def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
@@ -404,9 +404,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active = len(pairs) + len(queues['any']) + len(queues['Male']) + len(queues['Female'])
         await query.edit_message_text(f"📊 <b>Stats</b>\nUsers: {total}\nActive: {active}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='admin_back')]]), parse_mode='HTML')
     elif data == 'admin_broadcast':
-        await query.edit_message_text("📢 Reply /cast to a message.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='admin_back')]]), parse_mode='HTML')
+        await query.edit_message_text("📢 Use /cast (copy), /castbtn (1 button), or /broadcast (many buttons) by replying to a message.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='admin_back')]]), parse_mode='HTML')
     elif data == 'admin_back': await admin_panel(query, context)
 
+# --- OLD BROADCAST COMMANDS ---
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or not update.message.reply_to_message: return
     users = users_collection.find({}, {'_id': 1}); success = 0
@@ -416,7 +417,102 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
     await msg.edit_text(f"✅ Sent to {success} users.")
 
-# --- UPDATED GIFTING SYSTEM (1-10 Stars - CORRECT VERSION) ---
+async def broadcast_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    target_msg = update.message.reply_to_message
+    if not target_msg or not target_msg.photo: await update.message.reply_text("⚠️ Please reply to a PHOTO."); return
+    args_text = ' '.join(context.args)
+    if '|' not in args_text: await update.message.reply_text("⚠️ Format: /castbtn Text | Link"); return
+    try:
+        btn_text, btn_link = args_text.split('|', 1)
+        if not btn_link.strip().startswith(('http://', 'https://', 't.me/')): await update.message.reply_text("⚠️ Invalid link."); return
+    except ValueError: await update.message.reply_text("⚠️ Error parsing."); return
+    photo_id = target_msg.photo[-1].file_id; caption = target_msg.caption_html or ""
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text.strip(), url=btn_link.strip())]])
+    users = users_collection.find({}, {'_id': 1}); success = 0; failed = 0
+    status_msg = await update.message.reply_text(f"📢 Sending 1-button broadcast...", parse_mode='HTML')
+    for u in users:
+        try:
+            await context.bot.send_photo(chat_id=u['_id'], photo=photo_id, caption=caption, reply_markup=markup, parse_mode='HTML')
+            success += 1; await asyncio.sleep(0.05)
+        except: failed += 1
+    await status_msg.edit_text(f"✅ Done! Sent: {success}, Failed: {failed}", parse_mode='HTML')
+
+# --- NEW COMMAND: BROADCAST MULTIPLE BUTTONS (RENAMED TO /broadcast) ---
+async def broadcast_multi_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 1. Admin check and reply to photo check
+    if update.effective_user.id != ADMIN_ID: return
+    target_msg = update.message.reply_to_message
+    if not target_msg or not target_msg.photo:
+        await update.message.reply_text("⚠️ Please reply to a PHOTO with this command.")
+        return
+
+    # 2. Parse arguments (Format: Text1 - Link1 | Text2 - Link2 | ...)
+    args_text = ' '.join(context.args)
+    if '|' not in args_text or '-' not in args_text:
+        await update.message.reply_text("⚠️ Invalid format. Use:\n<code>/broadcast Text1 - Link1 | Text2 - Link2</code>", parse_mode='HTML')
+        return
+
+    # 3. Build Keyboard rows
+    keyboard_rows = []
+    raw_buttons = args_text.split('|')
+    
+    try:
+        for raw_btn in raw_buttons:
+            # Split by hyphen to get text and link
+            parts = raw_btn.split('-')
+            if len(parts) < 2: continue # Skip malformed buttons
+
+            # Join the text parts (in case text has hyphens) and get the last part as link
+            btn_text = '-'.join(parts[:-1]).strip()
+            btn_link = parts[-1].strip()
+
+            # Basic link validation
+            if not btn_link.startswith(('http://', 'https://', 't.me/')):
+                 await update.message.reply_text(f"⚠️ Invalid link found: {btn_link}")
+                 return
+            
+            # Add button to a new row (vertical layout)
+            keyboard_rows.append([InlineKeyboardButton(btn_text, url=btn_link)])
+            
+        if not keyboard_rows:
+             await update.message.reply_text("⚠️ No valid buttons found.")
+             return
+             
+        markup = InlineKeyboardMarkup(keyboard_rows)
+
+    except Exception as e:
+         await update.message.reply_text(f"⚠️ Error parsing buttons: {e}")
+         return
+
+    # 4. Broadcast loop
+    photo_id = target_msg.photo[-1].file_id
+    caption = target_msg.caption_html or ""
+    users = users_collection.find({}, {'_id': 1})
+    total_users = users_collection.count_documents({})
+    success = 0
+    failed = 0
+    
+    status_msg = await update.message.reply_text(f"📢 <b>Sending multi-button broadcast to {total_users} users...</b>", parse_mode='HTML')
+
+    for u in users:
+        try:
+            await context.bot.send_photo(
+                chat_id=u['_id'],
+                photo=photo_id,
+                caption=caption,
+                reply_markup=markup,
+                parse_mode='HTML'
+            )
+            success += 1
+            await asyncio.sleep(0.05) # Rate limit protection
+        except Exception:
+            failed += 1
+
+    await status_msg.edit_text(f"✅ <b>Broadcast Complete!</b>\n\n🟢 Sent: {success}\n🔴 Failed/Blocked: {failed}", parse_mode='HTML')
+
+
+# --- UPDATED GIFTING SYSTEM (1-10 Stars) ---
 async def gift_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in pairs: 
         return await update.message.reply_text("⚠️ You need to be in a chat to send gifts!")
@@ -533,13 +629,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_activity[user.id] = time.time()
         partner_id = pairs[user.id]
 
-        # --- SECURITY: BLOCK LINKS & USERNAMES (പുതിയതായി ചേർത്തത്) ---
+        # --- SECURITY: BLOCK LINKS & USERNAMES ---
         if text:
-            # ലിങ്കുകളോ യൂസർനെയിമുകളോ ഉണ്ടോ എന്ന് പരിശോധിക്കുന്നു
             if LINK_PATTERN.search(text) or USERNAME_PATTERN.search(text):
                 await update.message.reply_text("🚫 <b>Links and usernames are not allowed!</b>\n<i>To prevent spam, do not share links or @handles.</i>", parse_mode='HTML')
-                return # മെസ്സേജ് പാർട്ണർക്ക് അയക്കാതെ ഇവിടെ വെച്ച് നിർത്തുന്നു
-        # ------------------------------------------------------------
+                return 
         
         # --- VIP MEDIA CHECK ---
         if not text:
@@ -588,7 +682,9 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("cast", broadcast_command))
+    app.add_handler(CommandHandler("cast", broadcast_command)) # Old (Copy)
+    app.add_handler(CommandHandler("castbtn", broadcast_button_command)) # Old (1 Button)
+    app.add_handler(CommandHandler("broadcast", broadcast_multi_button_command)) # NEW NAME (Many Buttons)
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("gift", gift_menu)) # Alias
     
@@ -602,7 +698,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
-    print("Chai Bot V49 (Correct Gifts + Security) Started...")
+    print("Chai Bot V52 (Broadcast Command Renamed) Started...")
     app.run_polling()
 
 if __name__ == "__main__":
