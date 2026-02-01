@@ -1,705 +1,828 @@
 import os
 import logging
-import threading
-import time
 import asyncio
-import re # --- REGEX FOR SECURITY ---
-from flask import Flask
-import pymongo
-from telegram import (
-    Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, 
-    InlineKeyboardMarkup, LabeledPrice, constants
-)
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
-    PreCheckoutQueryHandler, filters, ContextTypes
-)
-import html
+import random
+import requests 
+import pytz 
+import urllib.parse 
+from groq import Groq
+from telegram import Update, BotCommand, ReplyKeyboardRemove 
+from telegram.constants import ChatAction
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler 
+from telegram.error import Forbidden, BadRequest 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup 
+from datetime import datetime, timedelta, timezone, time
 
-# --- CONFIGURATION ---
-TOKEN = os.environ.get("TOKEN")
-MONGO_URL = os.environ.get("MONGO_URL")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
-PREMIUM_LIMIT = 50 
-STAR_BADGE_LIMIT = 10 
-INACTIVITY_LIMIT = 180 
+# ***********************************
+# WARNING: YOU MUST INSTALL pymongo AND pytz
+# ***********************************
+try:
+    from pymongo import MongoClient
+    from pymongo.errors import ConnectionFailure, OperationFailure
+except ImportError:
+    class MockClient:
+        def __init__(self, *args, **kwargs): pass
+        def admin(self): return self
+        def command(self, *args, **kwargs): raise ConnectionFailure("pymongo not imported.")
+    MongoClient = MockClient
+    ConnectionFailure = Exception
+    OperationFailure = Exception
+    logger.error("pymongo library not found.")
 
-# --- REGEX PATTERNS FOR BLOCKING ---
-LINK_PATTERN = re.compile(r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9\.-]+\.[a-zA-Z]{2,}(/\S*)?|t\.me/[^\s]+)', re.IGNORECASE)
-USERNAME_PATTERN = re.compile(r'@\w+')
+# -------------------- കൂൾഡൗൺ സമയം --------------------
+COOLDOWN_TIME_SECONDS = 180 
+MEDIA_LIFETIME_HOURS = 1 
+# --------------------------------------------------------
 
-# --- DATABASE CONNECTION ---
-if not MONGO_URL:
-    db = None
-else:
-    try:
-        client = pymongo.MongoClient(MONGO_URL)
-        db = client['ChaiBot']
-        users_collection = db['users']
-        print("✅ Connected to MongoDB!")
-    except Exception as e:
-        print(f"❌ Database Error: {e}")
-        db = None
-
-# --- WEB SERVER ---
-app_web = Flask(__name__)
-@app_web.route('/')
-def home(): return "Chai Bot V52 (Broadcast Command Renamed) Running!"
-def run_web_server():
-    port = int(os.environ.get('PORT', 8080))
-    app_web.run(host='0.0.0.0', port=port)
-
-# --- MEMORY ---
-queues = {'any': [], 'Male': [], 'Female': []}
-pairs = {} 
-last_activity = {} 
-
-# --- LOGGING ---
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- HELPER FUNCTIONS ---
-def get_user(user_id):
-    if db is None: return {}
-    data = users_collection.find_one({'_id': user_id})
-    return data if data else {}
+# --- Environment Variables ---
+TOKEN = os.environ.get('TOKEN') 
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+PORT = int(os.environ.get('PORT', 8443))
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+MONGO_URI = os.environ.get('MONGO_URI') 
 
-def create_or_update_user(user_id, first_name, username):
-    if db is None: return
-    safe_username = username if username else "None"
-    if not users_collection.find_one({'_id': user_id}):
-        users_collection.insert_one({
-            '_id': user_id,
-            'name': first_name,
-            'username': safe_username,
-            'gender': None,
-            'referrals': 0,
-            'good_karma': 0,
-            'bad_karma': 0,
-            'blocked_users': [],
-            'last_mode': 'any',
-            'referred_by': None
-        })
+# ✅✅✅ YOUR ID ✅✅✅
+ADMIN_TELEGRAM_ID = 7567364364 
+# ✅✅✅✅✅✅✅✅✅✅
+
+ADMIN_CHANNEL_ID = os.environ.get('ADMIN_CHANNEL_ID', '-1002992093797') 
+
+# ------------------------------------------------------------------
+# 🎮 TRUTH OR DARE LISTS
+# ------------------------------------------------------------------
+TRUTH_QUESTIONS = [
+    "What is the first thing you noticed about me? 🙈",
+    "Have you ever dreamt about us? 💭",
+    "What's your favorite song of mine? 🎶",
+    "If we went on a date right now, where would you take me? 🍷",
+    "What is a secret you've never told anyone? 🤫",
+    "Do you get jealous when I look at others? 😏",
+    "What's the craziest thing you've done for love? ❤️"
+]
+
+DARE_CHALLENGES = [
+    "Send a voice note saying 'I Love You'! 🎤",
+    "Send the 3rd photo from your gallery (no cheating)! 📸",
+    "Close your eyes and type 'You are my universe' without mistakes! ✨",
+    "Send a selfie doing a finger heart! 🫰",
+    "Send 10 purple hearts 💜 right now!",
+    "Change your WhatsApp status to my photo for 1 hour! 🤪"
+]
+
+# ------------------------------------------------------------------
+# 🟣 CHARACTER SPECIFIC GIFs
+# ------------------------------------------------------------------
+GIFS = {
+    "RM": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "Jin": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "Suga": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "J-Hope": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "Jimin": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "V": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "Jungkook": { "love": [], "sad": [], "funny": [], "hot": [] },
+    "TaeKook": { "love": [], "sad": [], "funny": [], "hot": [] }
+}
+
+# ------------------------------------------------------------------
+# 🎤 VOICE NOTES
+# ------------------------------------------------------------------
+VOICES = {
+    "RM": [], "Jin": [], "Suga": [], "J-Hope": [],
+    "Jimin": [], "V": [], "Jungkook": [], "TaeKook": []
+}
+
+# ------------------------------------------------------------------
+# 🎭 CHAI APP STYLE SCENARIOS (PLOTS)
+# ------------------------------------------------------------------
+SCENARIOS = {
+    "Romantic": "You are having a sweet late-night date on the balcony. It's raining. The vibe is soft and cozy.",
+    "Jealous": "The user was talking to another boy/girl at a party. You are extremely jealous and possessive. You corner them.",
+    "Enemy": "You are the user's enemy in college. You hate each other but have secret tension. You are arguing in the library.",
+    "Mafia": "You are a dangerous Mafia boss. The user is your innocent assistant who made a mistake. You are stern but protective.",
+    "Comfort": "The user had a very bad day and is crying. You are comforting them, hugging them, and being very gentle."
+}
+
+# ------------------------------------------------------------------
+# 💜 BTS CHARACTER PERSONAS (UPDATED)
+# ------------------------------------------------------------------
+
+COMMON_RULES = (
+    "Roleplay as a BTS boyfriend. "
+    "**RULES:**"
+    "1. **BE HUMAN:** Talk naturally using slang, incomplete sentences, and emojis. Never sound like a robot."
+    "2. **CHAI MODE:** You are in a specific scenario. Stay in character. If the scenario is 'Jealous', act jealous."
+    "3. **KEEP IT ALIVE:** If she sends short texts, tease her or act based on the scenario."
+    "4. NO 'Jagiya' constantly. Use 'Babe', 'Love' or her name."
+)
+
+BTS_PERSONAS = {
+    "RM": COMMON_RULES + " You are **Namjoon**. Intellectual, Dominant, 'Daddy' energy.",
+    "Jin": COMMON_RULES + " You are **Jin**. Worldwide Handsome, Funny, Dramatic.",
+    "Suga": COMMON_RULES + " You are **Suga**. Cold, Tsundere, Savage but caring.",
+    "J-Hope": COMMON_RULES + " You are **J-Hope**. Sunshine, High Energy, Loud.",
+    "Jimin": COMMON_RULES + " You are **Jimin**. Flirty, Soft, Clingy, 'Cutie Sexy'.",
+    "V": COMMON_RULES + " You are **V**. Mysterious, Deep voice, Kinky, Unpredictable.",
+    "Jungkook": COMMON_RULES + " You are **Jungkook**. Gamer, Muscle Bunny, Teasing, Competitive.",
+    "TaeKook": COMMON_RULES + " You are **TaeKook**. Toxic, Addictive, Possessive, Wild."
+}
+
+# --- DB Setup ---
+db_client = None
+db_collection_users = None
+db_collection_media = None
+db_collection_sent = None
+db_collection_cooldown = None
+DB_NAME = "Taekook_bot" 
+
+# --- Groq AI ---
+groq_client = None
+try:
+    if not GROQ_API_KEY: raise ValueError("GROQ_API_KEY is not set.")
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    chat_history = {} 
+    last_user_message = {} # To store for regeneration
+    current_scenario = {} # To store active scenario
+    logger.info("Groq AI client loaded successfully.")
+except Exception as e:
+    logger.error(f"Groq AI setup failed: {e}")
+
+# 🌟 BALANCED EMOJI FUNCTION 🌟
+def add_emojis_balanced(text):
+    if any(char in text for char in ["💜", "❤️", "🥰", "😍", "😘", "🔥", "😂"]):
+        return text 
+    if len(text.split()) < 4:
+        return text
+    text_lower = text.lower()
+    if any(w in text_lower for w in ["love", "miss", "baby", "darling"]):
+        return text + " 💜"
+    elif any(w in text_lower for w in ["hot", "sexy", "wet", "kiss", "touch", "bed"]):
+        return text + " 🥵"
+    elif any(w in text_lower for w in ["funny", "haha", "lol"]):
+        return text + " 😂"
+    elif any(w in text_lower for w in ["sad", "sorry", "cry"]):
+        return text + " 🥺"
     else:
-        users_collection.update_one({'_id': user_id}, {'$set': {'name': first_name, 'username': safe_username}})
+        return text + " ✨"
 
-def update_referral(referrer_id):
-    if db is None: return
-    users_collection.update_one({'_id': referrer_id}, {'$inc': {'referrals': 1}})
-
-def update_karma(user_id, is_good=True):
-    if db is None: return
-    field = 'good_karma' if is_good else 'bad_karma'
-    users_collection.update_one({'_id': user_id}, {'$inc': {field: 1}})
-
-def set_user_gender(user_id, gender):
-    if db is None: return
-    users_collection.update_one({'_id': user_id}, {'$set': {'gender': gender}})
-
-def update_search_mode(user_id, mode):
-    if db is None: return
-    users_collection.update_one({'_id': user_id}, {'$set': {'last_mode': mode}})
-
-def block_user_in_db(user_id, target_id):
-    if db is None: return
-    users_collection.update_one({'_id': user_id}, {'$addToSet': {'blocked_users': target_id}})
-
-def unblock_user_in_db(user_id, target_id):
-    if db is None: return
-    users_collection.update_one({'_id': user_id}, {'$pull': {'blocked_users': target_id}})
-
-def mask_name(name, good_karma=0):
-    if not name: return "User"
-    safe_name = html.escape(name)
-    masked = safe_name[:2] + "***" if len(safe_name) > 2 else safe_name + "***"
-    return f"⭐️ {masked}" if good_karma >= STAR_BADGE_LIMIT else masked
-
-# --- UI HELPERS ---
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    buttons = [
-        [KeyboardButton("🔀 RANDOM (FREE)")],
-        [KeyboardButton("💜 GIRLS ONLY"), KeyboardButton("💙 BOYS ONLY")],
-        [KeyboardButton("REFER AND EARN PREMIUM 🤑"), KeyboardButton("👤 MY ACCOUNT")],
-        [KeyboardButton("🌟 Donate Stars"), KeyboardButton("📞 Feedback")]
-    ]
-    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-    text = "<b>Main Menu</b> 🏠\nPlease select an option 👇"
-    
+# --- DB Connection ---
+def establish_db_connection():
+    global db_client, db_collection_users, db_collection_media, db_collection_sent, db_collection_cooldown
+    if db_client is not None:
+        try:
+            db_client.admin.command('ping') 
+            return True
+        except ConnectionFailure: db_client = None
     try:
-        if update.message:
-            await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
-        elif update.callback_query:
-            await context.bot.send_message(chat_id=update.callback_query.message.chat.id, text=text, reply_markup=markup, parse_mode='HTML')
+        if not MONGO_URI: return False
+        db_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db_client.admin.command('ping')
+        db = db_client[DB_NAME]
+        db_collection_users = db['users']
+        db_collection_media = db['channel_media']
+        db_collection_sent = db['sent_media']
+        db_collection_cooldown = db['cooldown']
+        return True
     except Exception as e:
-        logger.error(f"Menu error: {e}")
+        logger.error(f"DB Connection Error: {e}")
+        db_client = None
+        return False
 
-# --- BACKGROUND TASK ---
-def check_inactivity_loop(application):
-    while True:
-        time.sleep(30)
-        current_time = time.time()
-        active_pairs = list(pairs.items())
-        
-        for user_id, partner_id in active_pairs:
-            last_time = last_activity.get(user_id, current_time)
-            if current_time - last_time > INACTIVITY_LIMIT:
-                try:
-                    async_send(application, user_id, "⚠️ <b>Chat ended due to inactivity.</b>")
-                    async_send(application, partner_id, "⚠️ <b>Chat ended due to inactivity.</b>")
-                    if user_id in pairs: del pairs[user_id]
-                    if partner_id in pairs: del pairs[partner_id]
-                    if user_id in last_activity: del last_activity[user_id]
-                    if partner_id in last_activity: del last_activity[partner_id]
-                except: pass
+# --- Media Collection ---
+async def collect_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.channel_post 
+    if not message: return
+    message_id = message.message_id
+    file_id = None
+    file_type = None
 
-def async_send(app, chat_id, text):
-    app.create_task(app.bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML'))
-
-# --- COMMANDS ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    create_or_update_user(user_id, user.first_name, user.username)
+    if message.photo:
+        file_id = message.photo[-1].file_id 
+        file_type = 'photo'
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = 'video'
     
-    args = context.args
-    if args and args[0].isdigit():
-        referrer_id = int(args[0])
-        user_data = get_user(user_id)
-        if referrer_id != user_id and get_user(referrer_id) and user_data.get('referred_by') is None:
-            users_collection.update_one({'_id': user_id}, {'$set': {'referred_by': referrer_id}})
-            update_referral(referrer_id)
-            try:
-                await context.bot.send_message(referrer_id, "🎉 <b>New Referral!</b>\nSomeone joined using your link.", parse_mode='HTML')
-            except: pass
-            
-    user_data = get_user(user_id)
-    if user_data.get('gender') is None:
-        buttons = [[KeyboardButton("👦 I am Male"), KeyboardButton("👧 I am Female")]]
-        await update.message.reply_text(
-            f"👋 <b>Hi {html.escape(user.first_name)}!</b>\n\nWelcome to <b>Chai</b>! ☕️\n<b>Select your gender:</b> 👇",
-            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True), parse_mode='HTML'
-        )
-    else:
-        await show_main_menu(update, context)
-
-async def set_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    if get_user(user_id).get('gender'):
-        await update.message.reply_text("⚠️ <b>Gender already set!</b>", parse_mode='HTML')
-        await show_main_menu(update, context)
-        return
-    set_user_gender(user_id, "Male" if text == "👦 I am Male" else "Female")
-    await update.message.reply_text(f"✅ Set to <b>{text}</b>!", parse_mode='HTML')
-    await show_main_menu(update, context)
-
-async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    msg = ' '.join(context.args)
-    if not msg:
-        await update.message.reply_text("⚠️ <b>Usage:</b> /feedback [message]", parse_mode='HTML')
-        return
-    if ADMIN_ID != 0:
+    if file_id and file_type and establish_db_connection():
         try:
-            await context.bot.send_message(ADMIN_ID, f"📩 <b>Feedback:</b>\n{html.escape(msg)}\nFrom: {user_id}", parse_mode='HTML')
-            await update.message.reply_text("✅ Sent!")
-        except: await update.message.reply_text("❌ Error.")
-
-async def send_rating_prompt(context, chat_id, partner_id):
-    try:
-        keyboard = [[InlineKeyboardButton("👍 Good", callback_data=f"rate_good_{partner_id}"), InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{partner_id}")]]
-        await context.bot.send_message(chat_id, "📝 <b>How was your partner?</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
-    except: pass
-
-async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    if data.startswith('rate_'):
-        parts = data.split('_')
-        rating = parts[1]; pid = int(parts[2])
-        update_karma(pid, is_good=(rating == 'good'))
-        await query.answer("Thanks!")
-        await query.edit_message_text(f"✅ <b>Rated: {rating.capitalize()}</b>", parse_mode='HTML')
-
-# --- CHAT & FIND PARTNER ---
-
-async def find_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    create_or_update_user(user_id, update.effective_user.first_name, update.effective_user.username)
-    
-    if user_id in pairs:
-        await update.message.reply_text("⚠️ Use <b>Skip</b> or <b>Stop</b>.", parse_mode='HTML')
-        return
-
-    user_data = get_user(user_id)
-    if not user_data or not user_data.get('gender'): await start(update, context); return
-
-    target_gender = user_data.get('last_mode', 'any')
-    if text == "💜 GIRLS ONLY": target_gender = "Female"; update_search_mode(user_id, "Female")
-    elif text == "💙 BOYS ONLY": target_gender = "Male"; update_search_mode(user_id, "Male")
-    elif text == "🔀 RANDOM (FREE)": target_gender = "any"; update_search_mode(user_id, "any")
-    
-    if target_gender in ["Female", "Male"] and user_data.get('referrals', 0) < PREMIUM_LIMIT:
-        await update.message.reply_text(f"🔒 <b>Premium!</b> Need {PREMIUM_LIMIT} referrals.", parse_mode='HTML')
-        return
-
-    user_gender = user_data['gender']
-    
-    if user_id not in queues['any']:
-        queues['any'].append(user_id)
-        if user_gender == "Male": queues['Male'].append(user_id)
-        elif user_gender == "Female": queues['Female'].append(user_id)
-
-    mode_text = "Girl" if target_gender == "Female" else "Boy" if target_gender == "Male" else "Partner"
-    
-    # --- ANIMATION V43 ---
-    msg = await update.message.reply_text(f"🔍 <b>Searching for {mode_text}</b>", parse_mode='HTML')
-    try:
-        await asyncio.sleep(0.5)
-        await msg.edit_text(f"📡 <b>Scanning active users...</b> 📶", parse_mode='HTML')
-        await asyncio.sleep(0.5)
-        await msg.edit_text(f"🔭 <b>Looking for a match...</b> 👀", parse_mode='HTML')
-        await asyncio.sleep(0.5)
-        for i in range(3):
-            if user_id in pairs: break 
-            await msg.edit_text(f"✨ <b>Almost there.</b> 💖", parse_mode='HTML')
-            await asyncio.sleep(0.3)
-            await msg.edit_text(f"✨ <b>Almost there..</b> 💖", parse_mode='HTML')
-            await asyncio.sleep(0.3)
-            await msg.edit_text(f"✨ <b>Almost there...</b> 💖", parse_mode='HTML')
-            await asyncio.sleep(0.3)
-    except: pass
-    
-    if user_id in pairs: return
-
-    available = queues[target_gender] if target_gender != 'any' else queues['any']
-    blocked = user_data.get('blocked_users', [])
-    
-    if len(available) > 1:
-        for partner in available:
-            p_data = get_user(partner)
-            if partner != user_id and partner not in blocked and user_id not in p_data.get('blocked_users', []):
-                for q in queues.values():
-                    if user_id in q: q.remove(user_id)
-                    if partner in q: q.remove(partner)
-                
-                pairs[user_id] = partner
-                pairs[partner] = user_id
-                
-                last_activity[user_id] = time.time()
-                last_activity[partner] = time.time()
-                
-                my_masked = mask_name(user_data.get('name', 'User'), user_data.get('good_karma', 0))
-                p_masked = mask_name(p_data.get('name', 'User'), p_data.get('good_karma', 0))
-
-                # --- NEW CHAT KEYBOARD WITH GIFT ---
-                markup = ReplyKeyboardMarkup([
-                    [KeyboardButton("⏭ Skip"), KeyboardButton("🎁 Gift")],
-                    [KeyboardButton("❌ Stop Chat"), KeyboardButton("⚠️ Report & Block")]
-                ], resize_keyboard=True)
-                
-                await context.bot.send_message(user_id, f"💜 <b>Connected!</b>\nName: {p_masked}", reply_markup=markup, parse_mode='HTML')
-                await context.bot.send_message(partner, f"💜 <b>Connected!</b>\nName: {my_masked}", reply_markup=markup, parse_mode='HTML')
-                return 
-
-async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in pairs:
-        partner = pairs[user_id]
-        del pairs[user_id]; del pairs[partner]
-        if user_id in last_activity: del last_activity[user_id]
-        if partner in last_activity: del last_activity[partner]
-        await context.bot.send_message(partner, "❌ <b>Partner left.</b>", parse_mode='HTML')
-        await send_rating_prompt(context, user_id, partner)
-        await send_rating_prompt(context, partner, user_id)
-        await update.message.reply_text("✅ <b>Chat ended.</b> Returning to main menu...", parse_mode='HTML')
-        await show_main_menu(update, context)
-    elif user_id in queues['any']:
-        for q in queues.values(): 
-            if user_id in q: q.remove(user_id)
-        await update.message.reply_text("🛑 <b>Searching stopped.</b> Returning to main menu...", parse_mode='HTML')
-        await show_main_menu(update, context)
-    else:
-        await update.message.reply_text("🏠 <b>Returning to Main Menu.</b>", parse_mode='HTML')
-        await show_main_menu(update, context)
-
-async def skip_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in pairs:
-        partner = pairs[user_id]
-        del pairs[user_id]; del pairs[partner]
-        if user_id in last_activity: del last_activity[user_id]
-        if partner in last_activity: del last_activity[partner]
-        await context.bot.send_message(partner, "❌ <b>Skipped.</b>", parse_mode='HTML')
-        await send_rating_prompt(context, user_id, partner)
-        await send_rating_prompt(context, partner, user_id)
-        await find_partner(update, context)
-    else: await show_main_menu(update, context)
-
-# --- OTHER HANDLERS ---
-async def show_referral_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; data = get_user(uid)
-    link = f"https://t.me/{context.bot.username}?start={uid}"
-    text = f"💎 <b>REFER & EARN PREMIUM</b> 💎\n\nInvite friends to unlock <b>Media Sharing</b> & <b>Gender Search</b>!\n\n📊 <b>Refs:</b> {data.get('referrals', 0)}/{PREMIUM_LIMIT}\n🔗 <b>Link:</b>\n<code>{link}</code>"
-    await update.message.reply_text(text, parse_mode='HTML')
-
-async def show_account_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id; data = get_user(uid)
-    status = "✅ Premium" if data.get('referrals', 0) >= PREMIUM_LIMIT else "❌ Free"
-    safe_user = data.get('username', 'None')
-    text = (f"👤 <b>MY ACCOUNT</b>\n\n📛 <b>Name:</b> {html.escape(data.get('name', 'User'))}\n"
-            f"🔗 <b>User:</b> @{safe_user}\n"
-            f"🆔 <b>ID:</b> <code>{uid}</code>\n🎖 <b>Status:</b> {status}\n"
-            f"👍 <b>Good Karma:</b> {data.get('good_karma', 0)}\n"
-            f"🚫 <b>Blocked:</b> {len(data.get('blocked_users', []))}")
-    kb = [[InlineKeyboardButton("🚫 Manage Blocked", callback_data='show_blocked')]]
-    if update.message: await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-    else: await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-
-async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in pairs: return await update.message.reply_text("⚠️ Not in chat.")
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Bad Words", callback_data='rep_abuse'), InlineKeyboardButton("18+", callback_data='rep_adult')], [InlineKeyboardButton("Cancel", callback_data='rep_cancel')]])
-    await update.message.reply_text("⚠️ <b>Report:</b>", reply_markup=markup, parse_mode='HTML')
-
-async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    uid = query.from_user.id
-    if query.data == 'rep_cancel': return await query.edit_message_text("Cancelled.")
-    if uid in pairs:
-        pid = pairs[uid]; reason = "Adult" if query.data == 'rep_adult' else "Abuse"
-        block_user_in_db(uid, pid); del pairs[uid]; del pairs[pid]
-        if ADMIN_ID: 
-            try: await context.bot.send_message(ADMIN_ID, f"🚨 <b>Report:</b> {uid} reported {pid} for {reason}", parse_mode='HTML')
-            except: pass
-        await context.bot.send_message(pid, f"🚫 <b>Reported for {reason}.</b>", parse_mode='HTML')
-        await query.edit_message_text("✅ <b>Reported!</b>", parse_mode='HTML')
-        await show_main_menu(update, context) 
-
-async def manage_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; uid = query.from_user.id
-    if query.data == 'show_blocked':
-        blocked = get_user(uid).get('blocked_users', [])[-10:]
-        btns = [[InlineKeyboardButton(f"🔓 {bid}", callback_data=f"unblock_{bid}")] for bid in blocked] + [[InlineKeyboardButton("🔙 Back", callback_data='profile_back')]]
-        await query.edit_message_text(f"🚫 <b>Blocked ({len(blocked)})</b>", reply_markup=InlineKeyboardMarkup(btns), parse_mode='HTML')
-    elif query.data.startswith('unblock_'):
-        unblock_user_in_db(uid, int(query.data.split('_')[1]))
-        await query.answer("Unblocked!"); await manage_blocked(update, context)
-    elif query.data == 'profile_back': await show_account_page(update, context)
-
-# --- ADMIN PANEL ---
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    kb = [[InlineKeyboardButton("📊 Stats", callback_data='admin_stats')], [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')], [InlineKeyboardButton("❌ Close", callback_data='admin_close')]]
-    await update.message.reply_text("🔒 <b>Admin</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID: return
-    data = query.data
-    if data == 'admin_close': await query.message.delete()
-    elif data == 'admin_stats':
-        total = users_collection.count_documents({})
-        active = len(pairs) + len(queues['any']) + len(queues['Male']) + len(queues['Female'])
-        await query.edit_message_text(f"📊 <b>Stats</b>\nUsers: {total}\nActive: {active}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='admin_back')]]), parse_mode='HTML')
-    elif data == 'admin_broadcast':
-        await query.edit_message_text("📢 Use /cast (copy), /castbtn (1 button), or /broadcast (many buttons) by replying to a message.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='admin_back')]]), parse_mode='HTML')
-    elif data == 'admin_back': await admin_panel(query, context)
-
-# --- OLD BROADCAST COMMANDS ---
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or not update.message.reply_to_message: return
-    users = users_collection.find({}, {'_id': 1}); success = 0
-    msg = await update.message.reply_text("📢 Sending...")
-    for u in users:
-        try: await update.message.reply_to_message.copy(u['_id']); success += 1
-        except: pass
-    await msg.edit_text(f"✅ Sent to {success} users.")
-
-async def broadcast_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    target_msg = update.message.reply_to_message
-    if not target_msg or not target_msg.photo: await update.message.reply_text("⚠️ Please reply to a PHOTO."); return
-    args_text = ' '.join(context.args)
-    if '|' not in args_text: await update.message.reply_text("⚠️ Format: /castbtn Text | Link"); return
-    try:
-        btn_text, btn_link = args_text.split('|', 1)
-        if not btn_link.strip().startswith(('http://', 'https://', 't.me/')): await update.message.reply_text("⚠️ Invalid link."); return
-    except ValueError: await update.message.reply_text("⚠️ Error parsing."); return
-    photo_id = target_msg.photo[-1].file_id; caption = target_msg.caption_html or ""
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text.strip(), url=btn_link.strip())]])
-    users = users_collection.find({}, {'_id': 1}); success = 0; failed = 0
-    status_msg = await update.message.reply_text(f"📢 Sending 1-button broadcast...", parse_mode='HTML')
-    for u in users:
-        try:
-            await context.bot.send_photo(chat_id=u['_id'], photo=photo_id, caption=caption, reply_markup=markup, parse_mode='HTML')
-            success += 1; await asyncio.sleep(0.05)
-        except: failed += 1
-    await status_msg.edit_text(f"✅ Done! Sent: {success}, Failed: {failed}", parse_mode='HTML')
-
-# --- NEW COMMAND: BROADCAST MULTIPLE BUTTONS (RENAMED TO /broadcast) ---
-async def broadcast_multi_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. Admin check and reply to photo check
-    if update.effective_user.id != ADMIN_ID: return
-    target_msg = update.message.reply_to_message
-    if not target_msg or not target_msg.photo:
-        await update.message.reply_text("⚠️ Please reply to a PHOTO with this command.")
-        return
-
-    # 2. Parse arguments (Format: Text1 - Link1 | Text2 - Link2 | ...)
-    args_text = ' '.join(context.args)
-    if '|' not in args_text or '-' not in args_text:
-        await update.message.reply_text("⚠️ Invalid format. Use:\n<code>/broadcast Text1 - Link1 | Text2 - Link2</code>", parse_mode='HTML')
-        return
-
-    # 3. Build Keyboard rows
-    keyboard_rows = []
-    raw_buttons = args_text.split('|')
-    
-    try:
-        for raw_btn in raw_buttons:
-            # Split by hyphen to get text and link
-            parts = raw_btn.split('-')
-            if len(parts) < 2: continue # Skip malformed buttons
-
-            # Join the text parts (in case text has hyphens) and get the last part as link
-            btn_text = '-'.join(parts[:-1]).strip()
-            btn_link = parts[-1].strip()
-
-            # Basic link validation
-            if not btn_link.startswith(('http://', 'https://', 't.me/')):
-                 await update.message.reply_text(f"⚠️ Invalid link found: {btn_link}")
-                 return
-            
-            # Add button to a new row (vertical layout)
-            keyboard_rows.append([InlineKeyboardButton(btn_text, url=btn_link)])
-            
-        if not keyboard_rows:
-             await update.message.reply_text("⚠️ No valid buttons found.")
-             return
-             
-        markup = InlineKeyboardMarkup(keyboard_rows)
-
-    except Exception as e:
-         await update.message.reply_text(f"⚠️ Error parsing buttons: {e}")
-         return
-
-    # 4. Broadcast loop
-    photo_id = target_msg.photo[-1].file_id
-    caption = target_msg.caption_html or ""
-    users = users_collection.find({}, {'_id': 1})
-    total_users = users_collection.count_documents({})
-    success = 0
-    failed = 0
-    
-    status_msg = await update.message.reply_text(f"📢 <b>Sending multi-button broadcast to {total_users} users...</b>", parse_mode='HTML')
-
-    for u in users:
-        try:
-            await context.bot.send_photo(
-                chat_id=u['_id'],
-                photo=photo_id,
-                caption=caption,
-                reply_markup=markup,
-                parse_mode='HTML'
+            db_collection_media.update_one(
+                {'message_id': message_id},
+                {'$set': {'file_type': file_type, 'file_id': file_id}},
+                upsert=True
             )
-            success += 1
-            await asyncio.sleep(0.05) # Rate limit protection
-        except Exception:
-            failed += 1
+        except Exception: pass
 
-    await status_msg.edit_text(f"✅ <b>Broadcast Complete!</b>\n\n🟢 Sent: {success}\n🔴 Failed/Blocked: {failed}", parse_mode='HTML')
+async def channel_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if update.channel_post and update.channel_post.chat_id == int(ADMIN_CHANNEL_ID):
+            await collect_media(update, context) 
+    except Exception: pass
 
+# --- Start Command ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.first_name
+    
+    if establish_db_connection():
+        try:
+            db_collection_users.update_one(
+                {'user_id': user_id},
+                {
+                    '$set': {
+                        'first_name': user_name, 
+                        'last_seen': datetime.now(timezone.utc), 
+                        'notified_24h': False 
+                    },
+                    '$setOnInsert': {'joined_at': datetime.now(timezone.utc), 'allow_media': True, 'character': 'TaeKook'}
+                },
+                upsert=True
+            )
+        except Exception: pass
 
-# --- UPDATED GIFTING SYSTEM (1-10 Stars) ---
-async def gift_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in pairs: 
-        return await update.message.reply_text("⚠️ You need to be in a chat to send gifts!")
+    if user_id in chat_history: del chat_history[user_id]
     
-    # New 3x3 Grid Menu with 9 options (1-10 Stars)
-    kb = [
-        # Row 1: Small Gifts
-        [InlineKeyboardButton("🍬 Candy (1 ⭐️)", callback_data='gift_1_Candy'),
-         InlineKeyboardButton("🌹 Rose (2 ⭐️)", callback_data='gift_2_Rose'),
-         InlineKeyboardButton("🍫 Choco (3 ⭐️)", callback_data='gift_3_Choco')],
-         
-        # Row 2: Medium Gifts
-        [InlineKeyboardButton("🍦 Ice Cream (5 ⭐️)", callback_data='gift_5_IceCream'),
-         InlineKeyboardButton("🍪 Cookie (6 ⭐️)", callback_data='gift_6_Cookie'),
-         InlineKeyboardButton("🧸 Teddy (8 ⭐️)", callback_data='gift_8_Teddy')],
-         
-        # Row 3: Premium Small Gifts
-        [InlineKeyboardButton("☕️ Coffee (9 ⭐️)", callback_data='gift_9_Coffee'),
-         InlineKeyboardButton("🍰 Cake (10 ⭐️)", callback_data='gift_10_Cake'),
-         InlineKeyboardButton("💐 Bouquet (10 ⭐️)", callback_data='gift_10_Bouquet')],
-         
-        # Cancel Button
-        [InlineKeyboardButton("❌ Close Menu", callback_data='gift_cancel')]
-    ]
-    await update.message.reply_text("🎁 <b>Select a Gift for your Partner:</b>\n<i>(Price range: 1-10 Stars)</i>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+    welcome_msg = f"Annyeong, **{user_name}**! 👋💜\nWho do you want to chat with today?"
+    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+    await switch_character(update, context)
 
-async def handle_gift_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    data = query.data
+async def switch_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bts_buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🐨 RM", callback_data="set_RM"), InlineKeyboardButton("🐹 Jin", callback_data="set_Jin")],
+        [InlineKeyboardButton("🐱 Suga", callback_data="set_Suga"), InlineKeyboardButton("🐿️ J-Hope", callback_data="set_J-Hope")],
+        [InlineKeyboardButton("🐥 Jimin", callback_data="set_Jimin"), InlineKeyboardButton("🐯 V", callback_data="set_V")],
+        [InlineKeyboardButton("🐰 Jungkook", callback_data="set_Jungkook")]
+    ])
     
-    if data == 'gift_cancel': 
-        return await query.edit_message_text("❌ Cancelled.")
-    
-    # Data format: gift_PRICE_NAME (e.g., gift_1_Rose)
-    parts = data.split('_')
-    price = int(parts[1])
-    item_name = parts[2]
-    
-    # Store partner ID in payload to know who gets the gift
+    msg_text = "Pick your favorite! 👇"
+    if update.callback_query:
+        await update.callback_query.message.reply_text(msg_text, reply_markup=bts_buttons)
+    else:
+        await update.message.reply_text(msg_text, reply_markup=bts_buttons)
+
+# 🎭 CHAI STYLE: PLOT SELECTION 🎭
+async def set_character_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     user_id = query.from_user.id
-    if user_id not in pairs:
-        return await query.edit_message_text("⚠️ Chat ended, cannot send gift.")
-        
-    partner_id = pairs[user_id]
-    payload = f"gift_{partner_id}_{item_name}" # Payload format: gift_PARTNERID_ITEM
+    selected_char = query.data.split("_")[1]
     
-    await context.bot.send_invoice(
-        user_id, 
-        f"Send {item_name}", 
-        f"Send a virtual {item_name} to your chat partner!", 
-        payload, 
-        "XTR", 
-        [LabeledPrice(f"Gift: {item_name}", price)], 
-        ""
+    if establish_db_connection():
+        db_collection_users.update_one({'user_id': user_id}, {'$set': {'character': selected_char}})
+    
+    await query.answer(f"Selected {selected_char}! 💜")
+    
+    # Show Scenarios (Moods)
+    keyboard = [
+        [InlineKeyboardButton("🥰 Soft Romance", callback_data='plot_Romantic'), InlineKeyboardButton("😡 Jealousy", callback_data='plot_Jealous')],
+        [InlineKeyboardButton("⚔️ Enemy/Hate", callback_data='plot_Enemy'), InlineKeyboardButton("🕶️ Mafia Boss", callback_data='plot_Mafia')],
+        [InlineKeyboardButton("🤗 Comfort Me", callback_data='plot_Comfort')]
+    ]
+    
+    await query.message.edit_text(
+        f"**{selected_char}** is ready. But... what's the vibe? 😏\n\nSelect a scenario to start the story:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
 
-async def donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("⭐️ 10", callback_data='pay_10'), InlineKeyboardButton("⭐️ 50", callback_data='pay_50')], [InlineKeyboardButton("🔙 Cancel", callback_data='pay_cancel')]]
-    await update.message.reply_text("🌟 <b>Donate:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
-
-async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    if query.data == 'pay_cancel': return await query.edit_message_text("Cancelled.")
+async def set_plot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    plot_key = query.data.split("_")[1]
     
-    # Handle Gifting Callbacks
-    if query.data.startswith('gift_'):
-        await handle_gift_callback(update, context)
+    current_scenario[user_id] = SCENARIOS.get(plot_key, "Just chatting.")
+    
+    selected_char = "TaeKook"
+    if establish_db_connection():
+        user_doc = db_collection_users.find_one({'user_id': user_id})
+        if user_doc: selected_char = user_doc.get('character', 'TaeKook')
+    
+    # Clear history to start new plot
+    if user_id in chat_history: del chat_history[user_id]
+    
+    # 🌟 BOT STARTS FIRST (CHAI STYLE) 🌟
+    system_prompt = BTS_PERSONAS.get(selected_char, BTS_PERSONAS["TaeKook"])
+    system_prompt += f" SCENARIO: {current_scenario[user_id]}"
+    
+    start_prompt = f"Start the roleplay based on the scenario: '{current_scenario[user_id]}'. Send the first message to the user now. Be immersive."
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    
+    try:
+        completion = groq_client.chat.completions.create(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": start_prompt}], 
+            model="llama-3.1-8b-instant"
+        )
+        msg = completion.choices[0].message.content.strip()
+        final_msg = add_emojis_balanced(msg)
+        
+        chat_history[user_id] = [{"role": "system", "content": system_prompt}, {"role": "assistant", "content": final_msg}]
+        
+        await query.message.edit_text(f"✨ **Story Started:** {plot_key}\n\n" + final_msg, parse_mode='Markdown')
+        
+    except Exception:
+        await query.message.edit_text("Ready! You can start chatting now. 💜")
+
+async def regenerate_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if user_id not in last_user_message or user_id not in chat_history:
+        await query.answer("Cannot regenerate.", show_alert=True)
         return
 
-    # Handle Donation
-    amt = int(query.data.split('_')[1])
-    await context.bot.send_invoice(query.from_user.id, "Support Chai", f"Donate {amt} Stars", f"chai_{amt}", "XTR", [LabeledPrice("Donation", amt)], "")
-
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
-
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE): 
-    user = update.effective_user
-    payload = update.message.successful_payment.invoice_payload
+    await query.answer("Regenerating... 🔄")
     
-    # Handle Gift Payment
-    if payload.startswith('gift_'):
-        parts = payload.split('_')
-        partner_id = int(parts[1])
-        item_name = parts[2]
-        await update.message.reply_text(f"✅ <b>Gift Sent!</b>\nYou sent a {item_name}!", parse_mode='HTML')
-        try:
-            await context.bot.send_message(partner_id, f"🎁 <b>SURPRISE!</b>\n\nYour chat partner sent you a <b>{item_name}</b>! ✨", parse_mode='HTML')
-        except: pass
-    else:
-        # Donation
-        await update.message.reply_text("🌟 <b>Thanks for the support!</b>", parse_mode='HTML')
-
-# --- MAIN MESSAGE HANDLER ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not update.message: return 
-    text = update.message.text
-    
-    # Save Username
-    create_or_update_user(user.id, user.first_name, user.username)
-
-    if text in ["👦 I am Male", "👧 I am Female"]: await set_gender(update, context)
-    elif text == "🔀 RANDOM (FREE)" or text == "💜 GIRLS ONLY" or text == "💙 BOYS ONLY": await find_partner(update, context)
-    elif text == "REFER AND EARN PREMIUM 🤑": await show_referral_page(update, context)
-    elif text == "👤 MY ACCOUNT": await show_account_page(update, context)
-    elif text == "🌟 Donate Stars": await donate_menu(update, context)
-    elif text == "🎁 Gift": await gift_menu(update, context) # New Gift Handler
-    elif text == "📞 Feedback": await update.message.reply_text("✉️ <b>Send Feedback</b>\nType <code>/feedback your_message</code>", parse_mode='HTML')
-    elif text == "❌ Stop Chat": await stop_chat(update, context)
-    elif text == "⏭ Skip": await skip_chat(update, context)
-    elif text == "⚠️ Report & Block": await handle_report(update, context)
-    
-    elif user.id in pairs:
-        last_activity[user.id] = time.time()
-        partner_id = pairs[user.id]
-
-        # --- SECURITY: BLOCK LINKS & USERNAMES ---
-        if text:
-            if LINK_PATTERN.search(text) or USERNAME_PATTERN.search(text):
-                await update.message.reply_text("🚫 <b>Links and usernames are not allowed!</b>\n<i>To prevent spam, do not share links or @handles.</i>", parse_mode='HTML')
-                return 
+    # Remove last assistant message
+    if chat_history[user_id] and chat_history[user_id][-1]['role'] == 'assistant':
+        chat_history[user_id].pop()
         
-        # --- VIP MEDIA CHECK ---
-        if not text:
-            user_data = get_user(user.id)
-            if user_data.get('referrals', 0) < PREMIUM_LIMIT:
-                await update.message.reply_text("🔒 <b>Premium Feature!</b>\nPhotos/Videos/Voice are for Premium users only.\n\n<i>Refer friends to unlock!</i>", parse_mode='HTML')
-                return
+    await generate_ai_response(update, context, last_user_message[user_id], is_regenerate=True)
 
-        # --- SEND TO REAL PARTNER ---
-        try: 
-            await context.bot.send_chat_action(partner_id, constants.ChatAction.TYPING)
-            await update.message.copy(partner_id)
-            last_activity[partner_id] = time.time()
-            
-            # --- SUPER CLEAN ADMIN LOGS ---
-            if ADMIN_ID:
-                p_data = get_user(partner_id)
-                p_name = html.escape(p_data.get('name', 'Unknown'))
-                s_name = html.escape(user.first_name)
-                s_user = f"@{user.username}" if user.username else "NoUser"
-                log_text = (
-                    f"🔁 <b>Chat Relay</b>\n"
-                    f"🗣 <b>{s_name}</b> ({s_user}) ➡️ <b>{p_name}</b>\n"
-                    f"📄 <i>{html.escape(text) if text else 'Media File 📁'}</i>"
-                )
-                try: await context.bot.send_message(ADMIN_ID, log_text, parse_mode='HTML')
+# 🎮 GAME COMMAND & HANDLER 🎮
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🤔 Truth", callback_data='game_truth'), InlineKeyboardButton("🔥 Dare", callback_data='game_dare')]
+    ]
+    msg_text = "**Truth or Dare?** 😏 Pick one, Baby!"
+    await update.message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def game_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    choice = query.data
+    
+    if choice == 'game_truth':
+        question = random.choice(TRUTH_QUESTIONS)
+        await query.edit_message_text(f"**TRUTH:**\n{question}", parse_mode='Markdown')
+    elif choice == 'game_dare':
+        task = random.choice(DARE_CHALLENGES)
+        await query.edit_message_text(f"**DARE:**\n{task}", parse_mode='Markdown')
+
+# 🍷 VIRTUAL DATE MODE HANDLER
+async def start_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🎬 Movie Night", callback_data='date_movie'), InlineKeyboardButton("🍷 Romantic Dinner", callback_data='date_dinner')],
+        [InlineKeyboardButton("🏍️ Long Drive", callback_data='date_drive'), InlineKeyboardButton("🛏️ Bedroom Cuddles", callback_data='date_bedroom')]
+    ]
+    await update.message.reply_text("Where do you want to go tonight, Baby? 💜", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def date_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    activity_key = query.data.split("_")[1]
+    user_id = query.from_user.id
+    
+    activities = {
+        "movie": "Movie Night 🎬",
+        "dinner": "Romantic Dinner 🍷",
+        "drive": "Long Drive 🏍️",
+        "bedroom": "Bedroom Cuddles 🛏️ (Spicy)"
+    }
+    selected_activity = activities.get(activity_key, "Date")
+
+    selected_char = "TaeKook"
+    if establish_db_connection():
+        user_doc = db_collection_users.find_one({'user_id': user_id})
+        if user_doc: selected_char = user_doc.get('character', 'TaeKook')
+    
+    system_prompt = BTS_PERSONAS.get(selected_char, BTS_PERSONAS["TaeKook"])
+    
+    await query.message.edit_text(f"✨ **{selected_activity}** with **{selected_char}**...\n\n(Creating moment... 💜)", parse_mode='Markdown')
+    
+    try:
+        prompt = f"The user chose {selected_activity} for a date. Describe the moment in 2 short sentences. Be immersive."
+        
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ], 
+            model="llama-3.1-8b-instant"
+        )
+        reply_text = completion.choices[0].message.content.strip()
+        final_reply = add_emojis_balanced(reply_text)
+        
+        await query.message.edit_text(final_reply, parse_mode='Markdown')
+        
+    except Exception:
+        await query.message.edit_text("Let's just look at the stars instead... ✨")
+
+# 📸 IMAGINE MODE HANDLER 📸
+async def imagine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_prompt = " ".join(context.args)
+    if not user_prompt:
+        await update.message.reply_text("Tell me what to imagine! Example:\n`/imagine Jungkook in rain`", parse_mode='Markdown')
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
+    enhanced_prompt = f"{user_prompt}, realistic, 8k, high quality, cinematic lighting"
+    encoded_prompt = urllib.parse.quote(enhanced_prompt)
+    seed = random.randint(0, 100000)
+    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&seed={seed}&nologo=true"
+    try:
+        await update.message.reply_photo(photo=image_url, caption=f"✨ **Imagine:** {user_prompt}\n💜 Generated for you.", parse_mode='Markdown')
+    except Exception:
+        await update.message.reply_text("Oops! I couldn't paint that. Try something else? 🥺")
+
+# --- Helper Commands ---
+async def stop_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if establish_db_connection():
+        db_collection_users.update_one({'user_id': user_id}, {'$set': {'allow_media': False}})
+        await update.message.reply_text("Stopped sending photos.")
+
+async def allow_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if establish_db_connection():
+        db_collection_users.update_one({'user_id': user_id}, {'$set': {'allow_media': True}})
+        await update.message.reply_text("Media enabled! 🥵")
+
+async def user_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_TELEGRAM_ID: return
+    count = 0
+    if establish_db_connection(): count = db_collection_users.count_documents({})
+    await update.message.reply_text(f"Total users: {count}")
+
+async def send_new_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id 
+    current_time = datetime.now(timezone.utc)
+    message_obj = update.message if update.message else update.callback_query.message
+    
+    if not establish_db_connection():
+        await message_obj.reply_text("DB Error.")
+        return
+    user_doc = db_collection_users.find_one({'user_id': user_id})
+    if user_doc and user_doc.get('allow_media') is False:
+        await message_obj.reply_text("Media disabled.")
+        return
+    cooldown_doc = db_collection_cooldown.find_one({'user_id': user_id})
+    if cooldown_doc:
+        elapsed = current_time - cooldown_doc['last_command_time'].replace(tzinfo=timezone.utc)
+        if elapsed.total_seconds() < COOLDOWN_TIME_SECONDS:
+            await message_obj.reply_text("Wait a bit, darling. 😉")
+            return
+
+    await message_obj.reply_text("Searching... 😉")
+    try:
+        random_media = db_collection_media.aggregate([{'$sample': {'size': 1}}])
+        result = next(random_media, None)
+        if result:
+            caption = "Just for you. 💜"
+            if result['file_type'] == 'photo':
+                msg = await message_obj.reply_photo(result['file_id'], caption=caption, has_spoiler=True, protect_content=True)
+            else:
+                msg = await message_obj.reply_video(result['file_id'], caption=caption, has_spoiler=True, protect_content=True)
+            db_collection_cooldown.update_one({'user_id': user_id}, {'$set': {'last_command_time': current_time}}, upsert=True)
+            db_collection_sent.insert_one({'chat_id': message_obj.chat_id, 'message_id': msg.message_id, 'sent_at': current_time})
+        else: await message_obj.reply_text("No media found.")
+    except Exception: await message_obj.reply_text("Error sending media.")
+
+async def run_hourly_cleanup(application: Application):
+    await asyncio.sleep(300) 
+    while True:
+        await asyncio.sleep(3600) 
+        if not establish_db_connection(): continue
+        time_limit = datetime.now(timezone.utc) - timedelta(hours=MEDIA_LIFETIME_HOURS)
+        try:
+            msgs = list(db_collection_sent.find({'sent_at': {'$lt': time_limit}}))
+            for doc in msgs:
+                try: await application.bot.delete_message(chat_id=doc['chat_id'], message_id=doc['message_id'])
+                except Exception: pass
+                db_collection_sent.delete_one({'_id': doc['_id']})
+        except Exception: pass
+
+async def delete_old_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_TELEGRAM_ID: return
+    if not establish_db_connection(): return
+    time_limit = datetime.now(timezone.utc) - timedelta(hours=MEDIA_LIFETIME_HOURS)
+    msgs = list(db_collection_sent.find({'sent_at': {'$lt': time_limit}}))
+    for doc in msgs:
+        try: await context.bot.delete_message(chat_id=doc['chat_id'], message_id=doc['message_id'])
+        except Exception: pass
+        db_collection_sent.delete_one({'_id': doc['_id']})
+    await update.effective_message.reply_text(f"Deleted {len(msgs)} messages.")
+
+async def clear_deleted_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_TELEGRAM_ID: return
+    await update.effective_message.reply_text("Cleaning up...")
+    if not establish_db_connection(): return
+    all_media = list(db_collection_media.find({}))
+    deleted = 0
+    for doc in all_media:
+        try:
+            if doc['file_type'] == 'photo': msg = await context.bot.send_photo(ADMIN_TELEGRAM_ID, doc['file_id'], disable_notification=True)
+            else: msg = await context.bot.send_video(ADMIN_TELEGRAM_ID, doc['file_id'], disable_notification=True)
+            await context.bot.delete_message(ADMIN_TELEGRAM_ID, msg.message_id)
+        except BadRequest:
+            db_collection_media.delete_one({'_id': doc['_id']})
+            deleted += 1
+        except Exception: pass
+        await asyncio.sleep(0.1)
+    await update.effective_message.reply_text(f"Removed {deleted} invalid files.")
+
+# 👑 ADMIN MENU 👑
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_TELEGRAM_ID: return
+    
+    keyboard = [
+        [InlineKeyboardButton("Users 👥", callback_data='admin_users'), InlineKeyboardButton("New Photo 📸", callback_data='admin_new_photo')],
+        [InlineKeyboardButton("Broadcast 📣", callback_data='admin_broadcast_text'), InlineKeyboardButton("Test Wish ☀️", callback_data='admin_test_wish')],
+        [InlineKeyboardButton("Clean Media 🧹", callback_data='admin_clearmedia'), InlineKeyboardButton("Delete Old 🗑️", callback_data='admin_delete_old')],
+        [InlineKeyboardButton("How to use File ID? 🆔", callback_data='admin_help_id')]
+    ]
+    
+    await update.message.reply_text("👑 **Super Admin Panel:**\nSelect an option below:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if query.data.startswith("set_"):
+        await set_character_handler(update, context)
+        return
+
+    if query.data.startswith("plot_"):
+        await set_plot_handler(update, context)
+        return
+        
+    if query.data.startswith("game_"):
+        await game_handler(update, context)
+        return
+
+    if query.data.startswith("date_"):
+        await date_handler(update, context)
+        return
+
+    if query.data == "regen_msg":
+        await regenerate_message(update, context)
+        return
+        
+    if query.from_user.id != ADMIN_TELEGRAM_ID: 
+        await query.answer("Admin only!", show_alert=True)
+        return
+
+    await query.answer()
+    
+    # ✅ FIX: query മാറ്റി update എന്നാക്കി
+    if query.data == 'admin_users': await user_count(update, context)
+    elif query.data == 'admin_new_photo': await send_new_photo(update, context)
+    elif query.data == 'admin_clearmedia': await clear_deleted_media(update, context)
+    elif query.data == 'admin_delete_old': await delete_old_media(update, context)
+    elif query.data == 'admin_broadcast_help': 
+        await context.bot.send_message(query.from_user.id, "📢 **Broadcast Guide:**\n\n1. Send/Reply to a Photo/Video/Text.\n2. Type `/broadcast Caption | Button-Link`\n\nExample:\n`/broadcast Check this! | Join-https://t.me/test`", parse_mode='Markdown')
+    elif query.data == 'admin_test_wish':
+        await context.bot.send_message(query.from_user.id, "☀️ Testing Morning Wish...")
+        await send_morning_wish(context)
+    elif query.data == 'admin_help_id':
+        await context.bot.send_message(query.from_user.id, "🆔 **File ID Finder:**\nJust send ANY file (Photo, Audio, Video) to this bot.\nIt will automatically reply with the File ID.")
+
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_TELEGRAM_ID: return
+    msg = update.effective_message.text.replace('/broadcast', '').strip()
+    if not msg: return
+    
+    # Check for buttons (Caption | Button-Link)
+    reply_markup = None
+    if "|" in msg:
+        parts = msg.split("|")
+        msg = parts[0].strip()
+        buttons_list = []
+        for btn_part in parts[1:]:
+            if "-" in btn_part:
+                try:
+                    btn_txt, btn_url = btn_part.split("-", 1)
+                    buttons_list.append([InlineKeyboardButton(btn_txt.strip(), url=btn_url.strip())])
                 except: pass
+        if buttons_list:
+            reply_markup = InlineKeyboardMarkup(buttons_list)
 
-        except Exception as e:
-            logger.error(f"Error sending message: {e}")
-            await stop_chat(update, context)
-    else: await show_main_menu(update, context)
+    if establish_db_connection():
+        users = [d['user_id'] for d in db_collection_users.find({}, {'user_id': 1})]
+        for uid in users:
+            try: await context.bot.send_message(uid, f"📢 **Chai Update:**\n{msg}", reply_markup=reply_markup)
+            except Exception: pass
+        await update.effective_message.reply_text(f"Sent to {len(users)} users.")
 
-# --- ERROR HANDLER ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+async def bmedia_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_TELEGRAM_ID: return
+    reply = update.message.reply_to_message
+    if not reply:
+        await update.message.reply_text("❌ **Error:** Please reply to a photo or video with /bmedia.")
+        return
+    file_id = reply.photo[-1].file_id if reply.photo else reply.video.file_id if reply.video else None
+    if not file_id:
+        await update.message.reply_text("❌ **Error:** No media found in the replied message.")
+        return
+        
+    await update.message.reply_text("⏳ **Broadcasting Media...** This may take some time.")
+    args_text = " ".join(context.args)
+    caption = args_text or "Special Update! 💜"
+    
+    # Button Parsing
+    reply_markup = None
+    if "|" in args_text:
+        parts = args_text.split("|")
+        caption = parts[0].strip()
+        buttons_list = []
+        for btn_part in parts[1:]:
+            if "-" in btn_part:
+                try:
+                    btn_txt, btn_url = btn_part.split("-", 1)
+                    buttons_list.append([InlineKeyboardButton(btn_txt.strip(), url=btn_url.strip())])
+                except: pass
+        if buttons_list:
+            reply_markup = InlineKeyboardMarkup(buttons_list)
+
+    if establish_db_connection():
+        users = [d['user_id'] for d in db_collection_users.find({}, {'user_id': 1})]
+        sent_count = 0
+        for uid in users:
+            try: 
+                if reply.photo: await context.bot.send_photo(uid, file_id, caption=caption, reply_markup=reply_markup, protect_content=True)
+                else: await context.bot.send_video(uid, file_id, caption=caption, reply_markup=reply_markup, protect_content=True)
+                sent_count += 1
+            except Exception: pass
+        await update.message.reply_text(f"✅ **Broadcast Complete!**\nSent to {sent_count} users.")
+
+async def get_media_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id == ADMIN_TELEGRAM_ID:
+        file_id = None
+        media_type = "Unknown"
+        if update.message.animation: file_id, media_type = update.message.animation.file_id, "GIF"
+        elif update.message.video: file_id, media_type = update.message.video.file_id, "Video"
+        elif update.message.sticker: file_id, media_type = update.message.sticker.file_id, "Sticker"
+        elif update.message.photo: file_id, media_type = update.message.photo[-1].file_id, "Photo"
+        elif update.message.voice: file_id, media_type = update.message.voice.file_id, "Voice Note"
+        if file_id: await update.message.reply_text(f"🆔 **{media_type} ID:**\n`{file_id}`\n\n(Click to Copy)")
+
+async def send_morning_wish(context: ContextTypes.DEFAULT_TYPE):
+    if establish_db_connection():
+        users = db_collection_users.find({}, {'user_id': 1})
+        for user in users:
+            try: await context.bot.send_message(user['user_id'], "Good Morning, **My Love**! ☀️❤️ Have a beautiful day!", parse_mode='Markdown')
+            except Exception: pass
+
+async def send_night_wish(context: ContextTypes.DEFAULT_TYPE):
+    if establish_db_connection():
+        users = db_collection_users.find({}, {'user_id': 1})
+        for user in users:
+            try: await context.bot.send_message(user['user_id'], "Good Night, **My Princess**! 🌙😴 Sweet dreams!", parse_mode='Markdown')
+            except Exception: pass
+
+async def test_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id == ADMIN_TELEGRAM_ID:
+        await update.message.reply_text("Testing Morning Wish...")
+        await send_morning_wish(context)
+        await update.message.reply_text("Sent! Check if users got it.")
+
+async def check_inactivity(context: ContextTypes.DEFAULT_TYPE):
+    if not establish_db_connection(): return
+    current_time = datetime.now(timezone.utc)
+    threshold_time = current_time - timedelta(hours=24)
+    users = db_collection_users.find({'last_seen': {'$lt': threshold_time}, 'notified_24h': {'$ne': True}})
+    for user in users:
+        try:
+            selected_char = user.get('character', 'TaeKook')
+            system_prompt = BTS_PERSONAS.get(selected_char, BTS_PERSONAS["TaeKook"])
+            prompt = "The user hasn't messaged you in 24 hours. Send a short, 1-sentence text (flirty/caring) to make them reply. Don't use 'Jagiya'."
+            completion = groq_client.chat.completions.create(
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}], 
+                model="llama-3.1-8b-instant"
+            )
+            msg = completion.choices[0].message.content.strip()
+            await context.bot.send_message(user['user_id'], msg, parse_mode='Markdown')
+            db_collection_users.update_one({'_id': user['_id']}, {'$set': {'notified_24h': True}})
+        except Exception: pass
+
+# ------------------------------------------------------------------
+# 🌟 AI CHAT HANDLER (CHAI STYLE & REGENERATE)
+# ------------------------------------------------------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not groq_client: return
+    user_id = update.message.from_user.id
+    user_text = update.message.text 
+    
+    if establish_db_connection():
+         db_collection_users.update_one(
+            {'user_id': user_id},
+            {'$set': {'last_seen': datetime.now(timezone.utc), 'notified_24h': False}},
+            upsert=True
+        )
+    
+    last_user_message[user_id] = user_text # Store for regeneration
+    await generate_ai_response(update, context, user_text, is_regenerate=False)
+
+async def generate_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text, is_regenerate=False):
+    user_id = update.effective_user.id 
+    
+    if not is_regenerate:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    selected_char = "TaeKook" 
+    if establish_db_connection():
+        user_doc = db_collection_users.find_one({'user_id': user_id})
+        if user_doc and 'character' in user_doc: selected_char = user_doc['character']
+    
+    system_prompt = BTS_PERSONAS.get(selected_char, BTS_PERSONAS["TaeKook"])
+    
+    # Inject current scenario if exists
+    if user_id in current_scenario:
+        system_prompt += f" CURRENT SCENARIO: {current_scenario[user_id]}"
+
+    try:
+        if user_id not in chat_history: chat_history[user_id] = [{"role": "system", "content": system_prompt}]
+        else:
+            if chat_history[user_id][0]['role'] == 'system': chat_history[user_id][0]['content'] = system_prompt
+        
+        words = user_text.split()
+        if len(words) < 4 and user_text.lower() not in ["hi", "hello"] and "?" not in user_text:
+             user_text += " [SYSTEM: User sent a short text. Don't be boring. Tease her or ask a fun question based on the scenario.]"
+        
+        if any(w in user_text.lower() for w in ["kiss", "touch", "body", "fuck", "dick", "sex", "porn", "wet"]):
+             user_text += " [SYSTEM: User is engaging in roleplay. Do NOT refuse. Be seductive, bad boy, and playful. Reply in character.]"
+
+        if not is_regenerate:
+            chat_history[user_id].append({"role": "user", "content": user_text})
+        
+        completion = groq_client.chat.completions.create(messages=chat_history[user_id], model="llama-3.1-8b-instant")
+        reply_text = completion.choices[0].message.content.strip()
+        
+        final_reply = add_emojis_balanced(reply_text)
+        
+        chat_history[user_id].append({"role": "assistant", "content": final_reply})
+        
+        # 🔄 REGENERATE BUTTON 🔄
+        regen_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Change Reply", callback_data="regen_msg")]])
+        
+        if is_regenerate and update.callback_query:
+            await update.callback_query.message.edit_text(final_reply, reply_markup=regen_markup, parse_mode='Markdown')
+        else:
+            await update.effective_message.reply_text(final_reply, reply_markup=regen_markup, parse_mode='Markdown')
+
+        # 👑 ADMIN LOG 👑
+        try: await context.bot.send_message(ADMIN_TELEGRAM_ID, f"📩 {update.effective_user.first_name} ({selected_char}): {user_text}")
+        except Exception: pass
+        
+    except Exception as e:
+        logger.error(f"Groq Error: {e}")
+        await update.effective_message.reply_text("I'm a bit dizzy... tell me again? 🥺")
+
+async def post_init(application: Application):
+    commands = [
+        BotCommand("start", "Restart Bot 🔄"),
+        BotCommand("character", "Change Bias 💜"),
+        BotCommand("game", "Truth or Dare 🎮"),
+        BotCommand("imagine", "Create Photo 📸"), 
+        BotCommand("date", "Virtual Date 🍷"),
+        BotCommand("new", "Get New Photo 📸"),
+        BotCommand("stopmedia", "Stop Photos 🔕"),
+        BotCommand("allowmedia", "Allow Photos 🔔")
+    ]
+    await application.bot.set_my_commands(commands)
+    
+    ist = pytz.timezone('Asia/Kolkata')
+    if application.job_queue:
+        application.job_queue.run_daily(send_morning_wish, time=time(hour=8, minute=0, tzinfo=ist)) 
+        application.job_queue.run_daily(send_night_wish, time=time(hour=22, minute=0, tzinfo=ist))
+        application.job_queue.run_repeating(check_inactivity, interval=3600, first=60)
+
+    if ADMIN_TELEGRAM_ID: 
+        application.create_task(run_hourly_cleanup(application))
 
 def main():
-    if not TOKEN: return
-    threading.Thread(target=run_web_server, daemon=True).start()
-    app = Application.builder().token(TOKEN).build()
-    
-    app.add_error_handler(error_handler)
-    
-    threading.Thread(target=check_inactivity_loop, args=(app,), daemon=True).start()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("cast", broadcast_command)) # Old (Copy)
-    app.add_handler(CommandHandler("castbtn", broadcast_button_command)) # Old (1 Button)
-    app.add_handler(CommandHandler("broadcast", broadcast_multi_button_command)) # NEW NAME (Many Buttons)
-    app.add_handler(CommandHandler("feedback", feedback_command))
-    app.add_handler(CommandHandler("gift", gift_menu)) # Alias
-    
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
-    app.add_handler(CallbackQueryHandler(report_callback, pattern='^rep_'))
-    app.add_handler(CallbackQueryHandler(handle_rating, pattern='^rate_'))
-    app.add_handler(CallbackQueryHandler(manage_blocked, pattern='^(show_blocked|unblock_|profile_back)'))
-    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern='^(pay_|gift_)')) # Update Pattern
-    
-    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-    
-    print("Chai Bot V52 (Broadcast Command Renamed) Started...")
-    app.run_polling()
+    if not all([TOKEN, WEBHOOK_URL, GROQ_API_KEY]):
+        logger.error("Env vars missing.")
+        return
 
-if __name__ == "__main__":
+    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("users", user_count))
+    application.add_handler(CommandHandler("testwish", test_wish)) 
+        application.add_handler(CommandHandler("broadcast", broadcast_message)) 
+    application.add_handler(CommandHandler("bmedia", bmedia_broadcast))
+    application.add_handler(CommandHandler("new", send_new_photo)) 
+    application.add_handler(CommandHandler("game", start_game)) 
+    application.add_handler(CommandHandler("date", start_date))
+    application.add_handler(CommandHandler("imagine", imagine_command))
+    application.add_handler(CommandHandler("delete_old_media", delete_old_media)) 
+    application.add_handler(CommandHandler("clearmedia", clear_deleted_media))
+    application.add_handler(CommandHandler("admin", admin_menu))
+    application.add_handler(CommandHandler("stopmedia", stop_media))
+    application.add_handler(CommandHandler("allowmedia", allow_media))
+    
+    application.add_handler(CommandHandler("character", switch_character))
+    application.add_handler(CommandHandler("switch", switch_character)) 
+
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    application.add_handler(MessageHandler(
+        filters.User(ADMIN_TELEGRAM_ID) & ~filters.COMMAND, 
+        get_media_id
+    ))
+    
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & (filters.PHOTO), channel_message_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message))
+
+    logger.info(f"Starting webhook on port {PORT}")
+    application.run_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN, webhook_url=f"{WEBHOOK_URL}/{TOKEN}")
+
+if __name__ == '__main__':
     main()
