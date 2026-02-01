@@ -1,5 +1,5 @@
 # ==============================
-#  TELEGRAM BTS ROLEPLAY BOT
+#  TAEKOOK TELEGRAM BOT (FULL)
 #  UPDATED: SINGLE /broadcast
 # ==============================
 
@@ -7,94 +7,176 @@ import os
 import logging
 import asyncio
 import random
+import requests
 import pytz
 import urllib.parse
-from datetime import datetime, timedelta, timezone, time
-
 from groq import Groq
-from pymongo import MongoClient
-from telegram import (
-    Update, BotCommand,
-    InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, BotCommand, ReplyKeyboardRemove
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    filters, ContextTypes, CallbackQueryHandler
 )
-from telegram.error import BadRequest
+from telegram.error import Forbidden, BadRequest
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime, timedelta, timezone, time
 
-# ---------------- CONFIG ----------------
-TOKEN = os.environ.get("TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-PORT = int(os.environ.get("PORT", 8443))
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-MONGO_URI = os.environ.get("MONGO_URI")
+# ***********************************
+# WARNING: YOU MUST INSTALL pymongo AND pytz
+# ***********************************
+try:
+    from pymongo import MongoClient
+    from pymongo.errors import ConnectionFailure, OperationFailure
+except ImportError:
+    class MockClient:
+        def __init__(self, *args, **kwargs): pass
+        def admin(self): return self
+        def command(self, *args, **kwargs): raise ConnectionFailure("pymongo not imported.")
+    MongoClient = MockClient
+    ConnectionFailure = Exception
+    OperationFailure = Exception
 
-ADMIN_TELEGRAM_ID = 7567364364
-ADMIN_CHANNEL_ID = "-1002992093797"
-
+# -------------------- COOLDOWN --------------------
 COOLDOWN_TIME_SECONDS = 180
 MEDIA_LIFETIME_HOURS = 1
-DB_NAME = "Taekook_bot"
+# -------------------------------------------------
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# ---------------- DB ----------------
-db_client = MongoClient(MONGO_URI)
-db = db_client[DB_NAME]
-users_col = db["users"]
-media_col = db["channel_media"]
-sent_col = db["sent_media"]
-cooldown_col = db["cooldown"]
+# --- ENV ---
+TOKEN = os.environ.get('TOKEN')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+PORT = int(os.environ.get('PORT', 8443))
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+MONGO_URI = os.environ.get('MONGO_URI')
 
-# ---------------- GROQ ----------------
-groq = Groq(api_key=GROQ_API_KEY)
-chat_history = {}
-last_user_message = {}
-current_scenario = {}
+ADMIN_TELEGRAM_ID = 7567364364
+ADMIN_CHANNEL_ID = os.environ.get('ADMIN_CHANNEL_ID', '-1002992093797')
 
-# ---------------- PERSONAS ----------------
+# ------------------------------------------------------------------
+# TRUTH OR DARE
+# ------------------------------------------------------------------
+TRUTH_QUESTIONS = [
+    "What is the first thing you noticed about me? 🙈",
+    "Have you ever dreamt about us? 💭",
+    "What's your favorite song of mine? 🎶",
+    "If we went on a date right now, where would you take me? 🍷",
+    "What is a secret you've never told anyone? 🤫",
+    "Do you get jealous when I look at others? 😏",
+    "What's the craziest thing you've done for love? ❤️"
+]
+
+DARE_CHALLENGES = [
+    "Send a voice note saying 'I Love You'! 🎤",
+    "Send the 3rd photo from your gallery (no cheating)! 📸",
+    "Close your eyes and type 'You are my universe' without mistakes! ✨",
+    "Send a selfie doing a finger heart! 🫰",
+    "Send 10 purple hearts 💜 right now!",
+    "Change your WhatsApp status to my photo for 1 hour! 🤪"
+]
+
+# ------------------------------------------------------------------
+# SCENARIOS
+# ------------------------------------------------------------------
+SCENARIOS = {
+    "Romantic": "Sweet late-night balcony date. Rainy, cozy.",
+    "Jealous": "User talked to someone else. You are jealous.",
+    "Enemy": "College enemies with hidden tension.",
+    "Mafia": "Mafia boss & innocent assistant.",
+    "Comfort": "User is crying. You comfort gently."
+}
+
+# ------------------------------------------------------------------
+# PERSONAS
+# ------------------------------------------------------------------
 COMMON_RULES = (
     "Roleplay as a BTS boyfriend. "
-    "Be natural, flirty, emotional, human."
+    "Be human, flirty, emotional."
 )
 
 BTS_PERSONAS = {
     "RM": COMMON_RULES + " You are Namjoon. Dominant, intellectual.",
     "Jin": COMMON_RULES + " You are Jin. Funny, dramatic.",
     "Suga": COMMON_RULES + " You are Suga. Cold, savage.",
-    "J-Hope": COMMON_RULES + " You are J-Hope. Loud sunshine.",
+    "J-Hope": COMMON_RULES + " You are J-Hope. Sunshine.",
     "Jimin": COMMON_RULES + " You are Jimin. Soft, clingy.",
-    "V": COMMON_RULES + " You are V. Mysterious, deep.",
+    "V": COMMON_RULES + " You are V. Mysterious.",
     "Jungkook": COMMON_RULES + " You are Jungkook. Teasing.",
-    "TaeKook": COMMON_RULES + " You are TaeKook. Toxic, possessive."
+    "TaeKook": COMMON_RULES + " You are TaeKook. Possessive."
 }
 
-# ---------------- UTIL ----------------
+# ------------------------------------------------------------------
+# DB SETUP
+# ------------------------------------------------------------------
+db_client = None
+db_collection_users = None
+db_collection_media = None
+db_collection_sent = None
+db_collection_cooldown = None
+DB_NAME = "Taekook_bot"
+
+def establish_db_connection():
+    global db_client, db_collection_users, db_collection_media, db_collection_sent, db_collection_cooldown
+    if db_client:
+        try:
+            db_client.admin.command('ping')
+            return True
+        except:
+            db_client = None
+    try:
+        db_client = MongoClient(MONGO_URI)
+        db_client.admin.command('ping')
+        db = db_client[DB_NAME]
+        db_collection_users = db['users']
+        db_collection_media = db['channel_media']
+        db_collection_sent = db['sent_media']
+        db_collection_cooldown = db['cooldown']
+        return True
+    except Exception as e:
+        logger.error(e)
+        return False
+
+# ------------------------------------------------------------------
+# GROQ
+# ------------------------------------------------------------------
+groq_client = Groq(api_key=GROQ_API_KEY)
+chat_history = {}
+last_user_message = {}
+current_scenario = {}
+
 def add_emojis_balanced(text):
     if len(text.split()) < 4:
         return text
     return text + " 💜"
 
-# ---------------- START ----------------
+# ------------------------------------------------------------------
+# START
+# ------------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    user_id = update.effective_user.id
     name = update.effective_user.first_name
-    users_col.update_one(
-        {"user_id": uid},
-        {"$setOnInsert": {
-            "first_name": name,
-            "character": "TaeKook",
-            "joined_at": datetime.now(timezone.utc),
-            "allow_media": True
-        }},
-        upsert=True
-    )
+
+    if establish_db_connection():
+        db_collection_users.update_one(
+            {'user_id': user_id},
+            {'$setOnInsert': {
+                'first_name': name,
+                'joined_at': datetime.now(timezone.utc),
+                'character': 'TaeKook',
+                'allow_media': True
+            }},
+            upsert=True
+        )
+
     await update.message.reply_text(f"Annyeong {name} 💜")
 
-# ---------------- BROADCAST (FINAL) ----------------
+# ==================================================
+# 🔥 SINGLE BROADCAST (TEXT + MEDIA + BUTTON)
+# ==================================================
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_TELEGRAM_ID:
         return
@@ -105,7 +187,6 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = args_text or ""
     reply_markup = None
 
-    # BUTTON PARSE
     if "|" in args_text:
         parts = args_text.split("|")
         caption = parts[0].strip()
@@ -114,10 +195,13 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "-" in part:
                 txt, url = part.split("-", 1)
                 buttons.append([InlineKeyboardButton(txt.strip(), url=url.strip())])
-        if buttons:
-            reply_markup = InlineKeyboardMarkup(buttons)
+        reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
 
-    users = [u["user_id"] for u in users_col.find({}, {"user_id": 1})]
+    if not establish_db_connection():
+        await update.message.reply_text("DB Error")
+        return
+
+    users = [u['user_id'] for u in db_collection_users.find({}, {'user_id': 1})]
     sent = 0
 
     await update.message.reply_text("📣 Broadcasting...")
@@ -126,24 +210,21 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if reply and reply.photo:
                 await context.bot.send_photo(
-                    uid,
-                    reply.photo[-1].file_id,
+                    uid, reply.photo[-1].file_id,
                     caption=caption,
                     reply_markup=reply_markup,
                     protect_content=True
                 )
             elif reply and reply.video:
                 await context.bot.send_video(
-                    uid,
-                    reply.video.file_id,
+                    uid, reply.video.file_id,
                     caption=caption,
                     reply_markup=reply_markup,
                     protect_content=True
                 )
             else:
                 await context.bot.send_message(
-                    uid,
-                    caption,
+                    uid, f"📢 {caption}",
                     reply_markup=reply_markup
                 )
             sent += 1
@@ -152,37 +233,35 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Sent to {sent} users")
 
-# ---------------- AI CHAT ----------------
+# ------------------------------------------------------------------
+# AI CHAT
+# ------------------------------------------------------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
     text = update.message.text
 
-    user = users_col.find_one({"user_id": uid}) or {}
-    char = user.get("character", "TaeKook")
-    system_prompt = BTS_PERSONAS.get(char, BTS_PERSONAS["TaeKook"])
-
-    if uid not in chat_history:
-        chat_history[uid] = [{"role": "system", "content": system_prompt}]
-
-    chat_history[uid].append({"role": "user", "content": text})
-
-    completion = groq.chat.completions.create(
+    completion = groq_client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        messages=chat_history[uid]
+        messages=[
+            {"role": "system", "content": "You are a flirty BTS boyfriend."},
+            {"role": "user", "content": text}
+        ]
     )
 
     reply = add_emojis_balanced(completion.choices[0].message.content)
-    chat_history[uid].append({"role": "assistant", "content": reply})
-
     await update.message.reply_text(reply)
 
-# ---------------- INIT ----------------
+# ------------------------------------------------------------------
+# POST INIT
+# ------------------------------------------------------------------
 async def post_init(app: Application):
     await app.bot.set_my_commands([
         BotCommand("start", "Start bot"),
         BotCommand("broadcast", "Admin broadcast")
     ])
 
+# ------------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------------
 def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
